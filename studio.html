@@ -78,6 +78,9 @@ textarea { width: 100%; resize: vertical; background: var(--chip); color: var(--
 .types button canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
 .types button span { position: absolute; left: 0; right: 0; bottom: 0; font-size: 11.5px; font-weight: 600; padding: 12px 6px 4px; background: linear-gradient(transparent, rgba(0,0,0,.75)); text-align: left; }
 .types button.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* embedded players (clean): the scene fills the frame at every width */
+body.clean { flex-direction: row; overflow: hidden; }
+body.clean #main { height: 100%; flex: 1; }
 
 </style>
 </head>
