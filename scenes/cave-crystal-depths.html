@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crystal Depths</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+
+/* ==========================================================================
+   TEST 5 - UNDERGROUND, DEPTH PROJECTION WITH A MOVING CAMERA: "Crystal Depths"
+   Resolved options (non-defaults marked *):
+     OUTPUT_MODE loop · LOOP_SECONDS 48* · RESOLUTION 320x180 · FRAME letterbox-2.39 · WORLD_W 1 (the camera travels in z)*
+     PROJECTION depth* · TRAVEL away* (forward along a 288 m looping track at 6 m/s) · CAMERA_HEIGHT raised* (2.6 m, behind the cart)
+     ENVIRONMENT underground* · ERA historical* · SETTING an old mine: timbered tunnel -> crystal cavern with a chasm
+       crossed on a trestle bridge, lit by a crack in the roof -> twisting tunnel back to the start*
+     TIME timeless* · WEATHER n/a · ATMOSPHERE light (dust)* · SKY none*
+     LIGHT_STYLE practical* · KEY miner's headlamp (warm, forward cone)* · PRACTICALS wall lanterns (warm), crystals (cyan,
+       magenta), daylight shaft (cool white)* · FLICKER candle (lanterns)* · SHAFTS on (one, from the roof crack)
+     SHADOWS none (lights only)* · RIM auto (each side takes the colour of the nearest light) · PRACTICAL_STRENGTH medium
+     MOOD wonder, speed, hush* · GRADE mixed warm/cool* · PALETTE 48*
+     SUBJECT_COUNT 1 · S1 miner in a yellow helmet riding a mine cart, seen from behind (vehicle + rider)*
+     BEATS ride -> look left at the crystals -> hold on across the bridge -> look up at the shaft -> look right
+           -> sparks on the S-bend -> duck under a low beam (the camera dips too)*
+     LOOP_CLOSE circuit* · EFFECT_1 sparks (burst from the outer wheel on bends)* · AMBIENT dust motes, bats*
+     SHOTS forward travel, following the cart, heading along the track tangent* · TITLE_CARD opening*
+   ========================================================================== */
+const TITLE = 'Crystal Depths';
+const W = 320, H = 180, IMG_TOP = 23, IMG_BOT = 157;            // letterbox 2.39 -> 134 px image
+const LOOP_FRAMES = 2880;                                       // 48 s
+const SEED = 7, OUTPUT_MODE = 'loop', STILL_T = 23.4, DEBUG_KEYS = true, EXPORT_SCALES = [1, 4];
+
+const PAL_HEX = [
+  '#07060b', '#110f18',                                         // 0-1   near-blacks
+  '#1d1a26', '#2e2936', '#47404a', '#6a5f62',                   // 2-5   rock: dark -> lit (neutral)
+  '#8a6a4e', '#c49468',                                         // 6-7   rock in warm light
+  '#2a1d18', '#4e3526', '#7a5236', '#b07a48',                   // 8-11  timber
+  '#2c2e38', '#5a5e6e', '#a8acb8',                              // 12-14 iron rails
+  '#0e3a48', '#1f6e7e', '#3fb8c8', '#9ff4ff',                   // 15-18 cyan: lit rock -> crystal -> glint
+  '#3a1c48', '#6e2e7e', '#c84ad8', '#f7a8ff',                   // 19-22 magenta: lit rock -> crystal -> glint
+  '#fff4d0', '#ffc860', '#e0802c', '#8a3a1c',                   // 23-26 flame / lamp / sparks
+  '#e8f0ff', '#9fb0cc', '#56627e',                              // 27-29 daylight: core -> lit rock
+  '#140f22', '#1f1733',                                         // 30-31 the chasm's depths
+  '#5c3c2a', '#8a5a36', '#3a3a44', '#6a6a78',                   // 32-35 cart: wood, wood lit, iron, iron lit
+  '#d8a07c', '#9a6450',                                         // 36-37 skin
+  '#4a6a8a', '#2e445e',                                         // 38-39 jacket
+  '#e0b030', '#9a7018',                                         // 40-41 helmet
+  '#3a2a24',                                                    // 42    hair
+  '#2a2230', '#4a3a50',                                         // 43-44 bats
+  '#6a8aa8',                                                    // 45    wet shine
+  '#f4ecd8',                                                    // 46    title text
+  '#3c3a2e'                                                     // 47    ballast
+];
+const K0 = 0, K1 = 1, RK0 = 2, RK1 = 3, RK2 = 4, RK3 = 5, RW0 = 6, RW1 = 7, TM0 = 8, TM1 = 9, TM2 = 10, TM3 = 11,
+      IR0 = 12, IR1 = 13, IR2 = 14, CY0 = 15, CY1 = 16, CY2 = 17, CY3 = 18, MG0 = 19, MG1 = 20, MG2 = 21, MG3 = 22,
+      FL0 = 23, FL1 = 24, FL2 = 25, FL3 = 26, DL0 = 27, DL1 = 28, DL2 = 29, VD0 = 30, VD1 = 31,
+      CA0 = 32, CA1 = 33, CA2 = 34, CA3 = 35, SK0 = 36, SK1 = 37, JK0 = 38, JK1 = 39, HT0 = 40, HT1 = 41, HR = 42,
+      BT0 = 43, BT1 = 44, WT0 = 45, TX0 = 46, GR0 = 47;
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+
+// ---------- remap tables ----------
+const SHADE = makeLUT([K1, K0, RK0, K1, RK1, RK0, RK2, RK1, RK3, RK2, RW0, RK2, RW1, RW0, TM0, K1, TM1, TM0, TM2, TM1, TM3, TM2,
+  IR0, K1, IR1, IR0, IR2, IR1, CY0, K1, CY1, CY0, CY2, CY1, CY3, CY2, MG0, K1, MG1, MG0, MG2, MG1, MG3, MG2,
+  FL0, FL1, FL1, FL2, FL2, FL3, FL3, TM0, DL0, DL1, DL1, DL2, DL2, RK1, VD0, K1, VD1, VD0,
+  CA0, TM0, CA1, CA0, CA2, IR0, CA3, CA2, SK0, SK1, SK1, CA0, JK0, JK1, JK1, K1, HT0, HT1, HT1, CA0, HR, K1,
+  BT0, K1, BT1, BT0, WT0, IR1, TX0, DL1, GR0, RK1]);
+const LIGHT = makeLUT([K1, RK0, RK0, RK1, RK1, RK2, RK2, RK3, RK3, RW1, RW0, RW1, TM0, TM1, TM1, TM2, TM2, TM3,
+  IR0, IR1, IR1, IR2, CY0, CY1, CY1, CY2, CY2, CY3, MG0, MG1, MG1, MG2, MG2, MG3, FL1, FL0, FL2, FL1, FL3, FL2,
+  DL2, DL1, DL1, DL0, VD0, VD1, VD1, RK1, CA0, CA1, CA2, CA3, SK1, SK0, JK1, JK0, HT1, HT0, GR0, RK2, BT0, BT1]);
+const DAYL = makeLUT([K1, DL2, RK0, DL2, RK1, DL2, RK2, DL1, RK3, DL1, VD0, DL2, VD1, DL2, TM0, DL2, TM1, DL2, TM2, DL1,
+  CY0, DL2, CY1, DL1, MG0, DL2, MG1, DL1, GR0, DL2, DL2, DL1, DL1, DL0, IR0, DL2, IR1, DL1]);
+
+// ---------- the track: a 288 m loop sampled every metre (width, height, floor, curvature, slope change, kind) ----------
+const TL = 288, SPEED = TL / LOOP, F = 120, HX = 160, HY = 72, NEAR = 0.6, NR = 62, CART_Z = 6;
+const SEGW = new Float32Array(TL), SEGH = new Float32Array(TL), SEGF = new Float32Array(TL), SEGC = new Float32Array(TL), SEGV = new Float32Array(TL);
+const SEGK = new Uint8Array(TL);                                     // 0 tunnel, 1 cavern floor, 2 bridge over the chasm
+function sm(a, b, x) { return ease((x - a) / (b - a)); }
+function bump(s, a, b) { return s > a && s < b ? Math.sin(Math.PI * (s - a) / (b - a)) : 0; }
+for (let s = 0; s < TL; s++) {
+  const cav = sm(70, 84, s) * (1 - sm(184, 198, s));
+  const gap = sm(98, 110, s) * (1 - sm(154, 166, s));                  // the chasm is wider than the rest of the cavern
+  SEGW[s] = lerp(1.5, 10 + 2 * Math.sin(s * 0.05) + 7 * gap, cav);
+  SEGH[s] = lerp(3.0, 15 + 3 * Math.sin(s * 0.08 + 1), cav);
+  SEGK[s] = cav < 0.5 ? 0 : s >= 104 && s < 160 ? 2 : 1;
+  SEGF[s] = SEGK[s] === 2 ? -26 : 0;
+  SEGC[s] = -0.012 * bump(s, 16, 52) + 0.008 * bump(s, 116, 178) + 0.022 * bump(s, 210, 230) - 0.022 * bump(s, 230, 250);
+  SEGV[s] = -0.008 * bump(s, 206, 218) + 0.008 * bump(s, 218, 242) - 0.008 * bump(s, 242, 254);
+}
+const LOW_BEAM = 268;                                                 // a low cross-beam in tunnel B (2.0-2.35 m)
+
+// ---------- lights (track coords: s, lateral, height) and sprites ----------
+const T_NEU = 0, T_WARM = 1, T_CYAN = 2, T_MAG = 3, T_DAY = 4;
+const LMAX = 64, LS = new Float32Array(LMAX), LXl = new Float32Array(LMAX), LHh = new Float32Array(LMAX), LT = new Uint8Array(LMAX), LI = new Float32Array(LMAX), LR2 = new Float32Array(LMAX);
+let LN = 0;
+function addLight(s, x, h, tint, I, r) { LS[LN] = s; LXl[LN] = x; LHh[LN] = h; LT[LN] = tint; LI[LN] = I; LR2[LN] = 1 / (r * r); LN++; }
+// sprites: 0 lantern, 1 crystal cluster (cyan), 2 crystal cluster (magenta)
+const SMAX = 96, SPS = new Float32Array(SMAX), SPX = new Float32Array(SMAX), SPH = new Float32Array(SMAX), SPT = new Uint8Array(SMAX), SPZ = new Float32Array(SMAX), SPV = new Uint8Array(SMAX);
+let SN = 0;
+function addSprite(s, x, h, type, size, variant) { SPS[SN] = s; SPX[SN] = x; SPH[SN] = h; SPT[SN] = type; SPZ[SN] = size; SPV[SN] = variant; SN++; }
+function buildTrackObjects() {
+  let side = 1;
+  for (let s = 6; s < TL; s += 12) {                                    // wall lanterns on the tunnel supports
+    if (SEGK[s] !== 0 || (s > 60 && s < 200)) continue;
+    const sp = Math.round(s / 4) * 4;
+    addLight(sp, side * 1.25, 2.0, T_WARM, 1.0, 2.2); addSprite(sp, side * 1.42, 2.05, 0, 0.32, side > 0 ? 1 : 0); side = -side;
+  }
+  for (let s = 84; s < 188; s += 1.8 + rnd() * 1.8) {                  // crystal clusters on the cavern walls, floor edges and cliffs
+    const si = Math.floor(s), sd = rnd() < 0.5 ? -1 : 1, w = SEGW[si], chasm = SEGK[si] === 2;
+    const deep = chasm && rnd() < 0.35;
+    const x = sd * (deep ? 1.5 + rnd() * (w - 2) : w - 0.4 - rnd() * (chasm ? 0.3 : 2.4));
+    const h = deep ? -26 : chasm ? -3 + rnd() * 8 : rnd() < 0.3 ? rnd() * 6 : 0;
+    const tint = s < 118 ? T_CYAN : s > 158 ? T_MAG : rnd() < 0.5 ? T_CYAN : T_MAG, size = deep ? 1.6 + rnd() * 1.4 : 0.6 + rnd() * rnd() * 2.2;
+    addSprite(s, x, h, tint === T_CYAN ? 1 : 2, size, Math.floor(rnd() * 4));
+    if (!deep) addLight(s, x - sd * 0.3, h + size * 0.5, tint, 0.36 + size * 0.14, 1.4 + size * 0.7);
+  }
+  const GS = [88, 97, 128, 141, 170, 179], GX = [-1, 1, -1, 1, 1, -1];   // a few giant clusters against the cavern walls
+  for (let g = 0; g < 6; g++) { const si = GS[g], sd = GX[g], w = SEGW[si], chasm = SEGK[si] === 2, x = sd * (w - 0.8), h = chasm ? -2.5 : 0, tint = g < 2 ? T_CYAN : g > 3 ? T_MAG : (g & 1 ? T_MAG : T_CYAN);
+    addSprite(si + 0.5, x, h, tint === T_CYAN ? 1 : 2, 3.4 + (g % 3) * 0.6, g & 3); addLight(si + 0.5, x - sd * 0.6, h + 1.8, tint, 0.95, 4.2); }
+  addLight(146, -1.0, 0.8, T_DAY, 1.4, 4.5);                             // daylight through a crack in the cavern roof
+}
+// per-segment light lists (everything within reach of that metre of track)
+const LLS = new Uint16Array(TL), LLN = new Uint8Array(TL), LIDX = new Uint8Array(TL * 16);
+function buildLightLists() {
+  for (let k = 0; k < TL; k++) {
+    let n = 0;
+    for (let j = 0; j < LN && n < 16; j++) { let d = Math.abs(LS[j] - k - 0.5); if (d > TL / 2) d = TL - d; if (d < 11) LIDX[k * 16 + n++] = j; }
+    LLS[k] = k * 16; LLN[k] = n;
+  }
+}
+
+// ---------- surface ramps: material x light tint -> 5 levels (dark -> lit) ----------
+const M_ROCK = 0, M_TIMB = 1, M_BAL = 2, M_IRON = 3, M_VOID = 4;
+const RAMP = new Uint8Array([
+  K1, RK0, RK1, RK2, RK3,   K1, RK0, RK1, RW0, RW1,   K1, RK0, RK1, CY0, CY1,   K1, RK0, RK1, MG0, MG1,   K1, RK0, RK1, DL2, DL1,   // rock (the tint only in the top steps)
+  K1, TM0, TM0, TM1, TM2,   K1, TM0, TM1, TM2, TM3,   K1, TM0, CY0, CY1, TM2,   K1, TM0, MG0, MG1, TM2,   K1, TM0, TM1, DL2, DL1,   // timber
+  K1, K1, RK0, GR0, RK2,    K1, K1, RK0, GR0, RW0,    K1, K1, RK0, CY0, CY1,    K1, K1, RK0, MG0, MG1,    K1, K1, RK0, GR0, DL2,    // ballast
+  K1, IR0, IR0, IR1, IR2,   K1, IR0, IR1, IR2, FL0,   K1, IR0, IR1, CY2, CY3,   K1, IR0, IR1, MG2, MG3,   K1, IR0, IR1, IR2, DL0,   // iron
+  VD0, VD0, VD1, VD1, RK1,  VD0, VD0, VD1, VD1, RK1,  VD0, VD0, VD1, CY0, CY1,  VD0, VD0, VD1, MG0, MG1,  VD0, VD0, VD1, DL2, DL2   // void
+]);
+// rim colour per tint (for the rider)
+const RIMC = new Uint8Array([RK3, FL1, CY3, MG3, DL0]);
+
+// ---------- title font: 5x7 bitmaps for the letters needed ----------
+const GLYPH = {
+  C: '01110 10001 10000 10000 10000 10001 01110', R: '11110 10001 10001 11110 10100 10010 10001', Y: '10001 10001 01010 00100 00100 00100 00100',
+  S: '01111 10000 10000 01110 00001 00001 11110', T: '11111 00100 00100 00100 00100 00100 00100', A: '01110 10001 10001 11111 10001 10001 10001',
+  L: '10000 10000 10000 10000 10000 10000 11111', D: '11110 10001 10001 10001 10001 10001 11110', E: '11111 10000 10000 11110 10000 10000 11111',
+  P: '11110 10001 10001 11110 10000 10000 10000', H: '10001 10001 10001 11111 10001 10001 10001'
+};
+const TITLE_TXT = 'CRYSTAL DEPTHS', TSC = 2, TGW = 6 * TSC;
+const TMASK_W = TITLE_TXT.length * TGW, TMASK_H = 7 * TSC, TMASK = new Uint8Array(TMASK_W * TMASK_H);
+function buildTitle() {
+  for (let i = 0; i < TITLE_TXT.length; i++) {
+    const g = GLYPH[TITLE_TXT[i]]; if (!g) continue;
+    const rows = g.split(' ');
+    for (let r = 0; r < 7; r++) for (let c = 0; c < 5; c++) if (rows[r][c] === '1')
+      for (let yy = 0; yy < TSC; yy++) for (let xx = 0; xx < TSC; xx++) TMASK[(r * TSC + yy) * TMASK_W + i * TGW + c * TSC + xx] = 1;
+  }
+}
+
+// ---------- moving-camera depth renderer ----------
+// The track ahead is cut into 1 m segments. Each ring (a cross-section at a segment boundary) is projected from a camera
+// that rides the rails and looks along the track's tangent, so bends and dips bend the tunnel away on screen.
+// Segments are drawn far -> near (painter's order) as four trapezoids: floor, ceiling, left and right wall, with
+// back faces culled; the step where the floor drops into the chasm becomes a cliff face. Every pixel is lit from its
+// 3D position (depth, lateral, height) by the lights within reach of its metre of track.
+const RZ = new Float32Array(NR + 1), RIZ = new Float32Array(NR + 1), RCX = new Float32Array(NR + 1), RRY = new Float32Array(NR + 1);
+const RYO = new Float32Array(NR + 1), RW = new Float32Array(NR + 1), RHt = new Float32Array(NR + 1), RK = new Int16Array(NR + 1);
+let sc = 0, camH = 2.6, AMB = 0.03, lampYaw = 0, lampPitch = 0, headI = 1;
+const LAMPH = 1.75;
+function buildRings() {
+  const k0 = Math.floor(sc), f = sc - k0;
+  let X = 0, dX = 0, Y = 0, dY = 0, zp = 0;
+  for (let j = 0; j <= NR; j++) {
+    let z = j - f;
+    if (j === 0) z = Math.min(NEAR, 0.8 * (1 - f));
+    const kPrev = (k0 + Math.max(0, j - 1)) % TL, dz = z - zp;                 // integrate curvature over [zp, z]
+    X += dX * dz + 0.5 * SEGC[kPrev] * dz * dz; dX += SEGC[kPrev] * dz;
+    Y += dY * dz + 0.5 * SEGV[kPrev] * dz * dz; dY += SEGV[kPrev] * dz;
+    zp = z;
+    const k = (k0 + j) % TL, iz = 1 / z;
+    RZ[j] = z; RIZ[j] = iz; RK[j] = k;
+    RCX[j] = HX + X * F * iz; RYO[j] = Y; RRY[j] = HY + (camH - Y) * F * iz;
+    RW[j] = SEGW[k]; RHt[j] = SEGH[k];
+  }
+}
+// ring lookup for any depth (sprites, the cart)
+let QCX = 0, QRY = 0;
+function atDepth(z) {
+  let j = 0; while (j < NR - 1 && RZ[j + 1] < z) j++;
+  const u = clamp((1 / z - RIZ[j]) / (RIZ[j + 1] - RIZ[j]), 0, 1);
+  QCX = lerp(RCX[j], RCX[j + 1], u); QRY = lerp(RRY[j], RRY[j + 1], u);
+}
+
+// ---- per-pixel lighting ----
+function hsh(a, b) { let n = Math.imul(a, 374761393) + Math.imul(b, 668265263); n = Math.imul(n ^ (n >>> 13), 1274126177); return ((n ^ (n >>> 16)) & 255) / 255; }
+// rock: strata with wavy joints, a brightness offset per band, sparse vertical cracks (in light-level units)
+function tri(v) { v -= Math.floor(v); return v < 0.5 ? v : 1 - v; }
+function rockTex(a, b, sz) {
+  const bb = b / sz + 1.5 * tri(a / sz * 0.17) + 0.6 * tri(a / sz * 0.47 + 0.3) + 0.25 * tri(a / sz * 1.3), band = Math.floor(bb), fr = bb - band;
+  if (fr < 0.07) return -0.9;
+  let t = (hsh(band, 3) - 0.5) * 0.4 + (fr > 0.82 ? 0.3 : 0);        // bands vary a little; the lip above a joint catches light
+  const ca = a / sz * 0.9 + fr * 0.6 + hsh(band, 9) * 7, cf = ca - Math.floor(ca);
+  if (cf < 0.035 && hsh(Math.floor(ca), band) > 0.62) t -= 0.8;       // occasional slanting fractures
+  return t;
+}
+function lit(mat, s, X, h, z, x, y, tex) {
+  const k = ((Math.floor(s) % TL) + TL) % TL, i0 = LLS[k], n = LLN[k];
+  let sum = AMB, best = 0.05, tint = T_NEU;
+  for (let j = 0; j < n; j++) {
+    const L = LIDX[i0 + j];
+    let dz = s - LS[L]; if (dz > TL / 2) dz -= TL; else if (dz < -TL / 2) dz += TL;
+    const dx = X - LXl[L], dy = h - LHh[L], c = LI[L] / (1 + (dz * dz + dx * dx + dy * dy) * LR2[L]);
+    sum += c; if (c > best) { best = c; tint = LT[L]; }
+  }
+  const hz = z - CART_Z;                                               // the headlamp: a forward cone from the rider
+  if (hz > 0.3) {
+    const dx = X - lampYaw * hz, dy = h - LAMPH - lampPitch * hz, d2 = hz * hz + dx * dx + dy * dy, cs = hz / Math.sqrt(d2);
+    if (cs > 0.86) { const c = headI * (cs - 0.86) * 9 / (1 + d2 * 0.01); sum += c; if (c > best) { best = c; tint = T_WARM; } }
+  }
+  let fog = z < 20 ? 1 : z > 46 ? 0 : 1 - (z - 20) / 26;
+  if (h < 0) fog *= h < -9 ? 0 : 1 + h / 9;                           // below the rails the chasm falls away into darkness
+  let v = sum * fog * 4.2; v += tex * (v < 1 ? v : 1);                 // texture only shows where there is light
+  // narrow dither: only the middle ~45% of each step is dithered, so lit areas stay mostly solid
+  let li = Math.floor(v); if (v - li > 0.5 + ((bay(x, y) + 0.5) / 16 - 0.5) * 0.45) li++;
+  li = li < 0 ? 0 : li > 4 ? 4 : li;
+  return RAMP[(mat * 5 + tint) * 5 + li];
+}
+
+// ---- trapezoids ----
+function floorQuad(a, b, fh) {
+  const za = RZ[a], zb = RZ[b], ya = HY + (camH - RYO[a] - fh) * F * RIZ[a], yb = HY + (camH - RYO[b] - fh) * F * RIZ[b];
+  if (ya <= yb) return;
+  const y0 = Math.max(IMG_TOP, Math.ceil(yb - 0.5)), y1 = Math.min(IMG_BOT - 1, Math.floor(ya - 0.5));
+  const k = RK[a], chasm = SEGK[k] === 2;
+  for (let y = y0; y <= y1; y++) {
+    const u = (y + 0.5 - yb) / (ya - yb), iz = RIZ[b] + (RIZ[a] - RIZ[b]) * u, z = 1 / iz; let s = sc + z; if (s >= TL) s -= TL;
+    const cx = RCX[b] + (RCX[a] - RCX[b]) * u, hw = (RW[b] + (RW[a] - RW[b]) * u) * F * iz;
+    const x0 = Math.max(0, Math.ceil(cx - hw - 0.5)), x1 = Math.min(W - 1, Math.floor(cx + hw - 0.5)), zf = z / F, row = y * W;
+    const sl = s - Math.floor(s / 0.72) * 0.72 < 0.26;                   // sleeper under this row?
+    for (let x = x0; x <= x1; x++) {
+      const X = (x + 0.5 - cx) * zf;
+      if (chasm) { FB[row + x] = (hsh(Math.floor(s * 3), Math.floor(X * 3)) > 0.985) ? ((Math.floor(s) & 1) ? MG2 : CY2) : lit(M_VOID, s, X, fh, z, x, y, 0.1); continue; }
+      const ax = X < 0 ? -X : X;
+      const hp = hsh(Math.floor(s * 4), Math.floor(X * 4));
+      let mat = M_ROCK, tex = hp > 0.84 ? 0.55 : hp < 0.1 ? -0.6 : 0;   // loose stones on the rock floor
+      if (ax < 0.8) { mat = sl && ax < 0.75 ? M_TIMB : M_BAL; tex = mat === M_BAL ? (hsh(Math.floor(s * 10), Math.floor(X * 10)) - 0.5) * 1.1 : 0.1; }
+      else if (ax > RW[a] - 0.35) tex -= 0.7;                          // contact shade where floor meets wall
+      FB[row + x] = lit(mat, s, X, 0, z, x, y, tex);
+    }
+  }
+}
+function ceilQuad(a, b) {
+  const ya = HY + (camH - RYO[a] - RHt[a]) * F * RIZ[a], yb = HY + (camH - RYO[b] - RHt[b]) * F * RIZ[b];
+  if (ya >= yb) return;
+  const y0 = Math.max(IMG_TOP, Math.ceil(ya - 0.5)), y1 = Math.min(IMG_BOT - 1, Math.floor(yb - 0.5)), tun = SEGK[RK[a]] === 0;
+  for (let y = y0; y <= y1; y++) {
+    const u = (y + 0.5 - ya) / (yb - ya), iz = RIZ[a] + (RIZ[b] - RIZ[a]) * u, z = 1 / iz; let s = sc + z; if (s >= TL) s -= TL;
+    const cx = RCX[a] + (RCX[b] - RCX[a]) * u, hw = (RW[a] + (RW[b] - RW[a]) * u) * F * iz, ht = RHt[a] + (RHt[b] - RHt[a]) * u;
+    const x0 = Math.max(0, Math.ceil(cx - hw - 0.5)), x1 = Math.min(W - 1, Math.floor(cx + hw - 0.5)), zf = z / F, row = y * W;
+    const beam = tun && s - Math.floor(s / 4) * 4 < 0.3;
+    for (let x = x0; x <= x1; x++) {
+      const X = (x + 0.5 - cx) * zf;
+      FB[row + x] = lit(beam ? M_TIMB : M_ROCK, s, X, ht, z, x, y, beam ? 0.1 : rockTex(s, X + 9, 0.8));
+    }
+  }
+}
+function wallQuad(a, b, side, fh) {                                    // side -1 left, +1 right
+  const xa = RCX[a] + side * RW[a] * F * RIZ[a], xb = RCX[b] + side * RW[b] * F * RIZ[b];
+  if (side < 0 ? xb <= xa : xb >= xa) return;                          // back face
+  const lo = side < 0 ? xa : xb, hi = side < 0 ? xb : xa;
+  const x0 = Math.max(0, Math.ceil(lo - 0.5)), x1 = Math.min(W - 1, Math.floor(hi - 0.5));
+  const ta = HY + (camH - RYO[a] - RHt[a]) * F * RIZ[a], tb = HY + (camH - RYO[b] - RHt[b]) * F * RIZ[b];
+  const ba = HY + (camH - RYO[a] - fh) * F * RIZ[a], bb = HY + (camH - RYO[b] - fh) * F * RIZ[b];
+  const tun = SEGK[RK[a]] === 0;
+  for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - xa) / (xb - xa), iz = RIZ[a] + (RIZ[b] - RIZ[a]) * u, z = 1 / iz; let s = sc + z; if (s >= TL) s -= TL;
+    const top = ta + (tb - ta) * u, bot = ba + (bb - ba) * u, rail = RRY[a] + (RRY[b] - RRY[a]) * u, zf = z / F;
+    const X = side * (RW[a] + (RW[b] - RW[a]) * u);
+    const post = tun && s - Math.floor(s / 4) * 4 < 0.26;
+    const y0 = Math.max(IMG_TOP, Math.ceil(top - 0.5)), y1 = Math.min(IMG_BOT - 1, Math.floor(bot - 0.5));
+    for (let y = y0; y <= y1; y++) {
+      const h = (rail - y - 0.5) * zf;
+      const mat = post ? M_TIMB : M_ROCK, tex = post ? (y === y0 ? -0.6 : 0.15) : rockTex(s, h, tun ? 0.7 : 1.6);
+      FB[y * W + x] = lit(mat, s, X, h, z, x, y, tex);
+    }
+  }
+}
+// cliff where the far segment's floor is higher than the near one's (the far side of the chasm)
+function stepFace(j, fNear, fFar) {
+  const iz = RIZ[j], z = RZ[j], cx = RCX[j], hw = RW[j] * F * iz; let s = sc + z; if (s >= TL) s -= TL;
+  const yTop = HY + (camH - RYO[j] - fFar) * F * iz, yBot = HY + (camH - RYO[j] - fNear) * F * iz;
+  const y0 = Math.max(IMG_TOP, Math.ceil(yTop - 0.5)), y1 = Math.min(IMG_BOT - 1, Math.floor(yBot - 0.5));
+  const x0 = Math.max(0, Math.ceil(cx - hw - 0.5)), x1 = Math.min(W - 1, Math.floor(cx + hw - 0.5)), zf = z / F;
+  for (let y = y0; y <= y1; y++) {
+    const h = (RRY[j] - y - 0.5) * zf;
+    for (let x = x0; x <= x1; x++) { const X = (x + 0.5 - cx) * zf; FB[y * W + x] = lit(M_ROCK, s, X, h, z, x, y, rockTex(X + 40, h, 1.6)); }
+  }
+}
+// trestle bridge: sleepers on two stringers (the chasm shows between them), rails, posts every 4 m
+function bridgeDeck(a, b) {
+  const ya = RRY[a], yb = RRY[b]; if (ya <= yb) return;
+  const y0 = Math.max(IMG_TOP, Math.ceil(yb - 0.5)), y1 = Math.min(IMG_BOT - 1, Math.floor(ya - 0.5));
+  for (let y = y0; y <= y1; y++) {
+    const u = (y + 0.5 - yb) / (ya - yb), iz = RIZ[b] + (RIZ[a] - RIZ[b]) * u, z = 1 / iz; let s = sc + z; if (s >= TL) s -= TL; const cx = RCX[b] + (RCX[a] - RCX[b]) * u;
+    const hw = 0.9 * F * iz, sl = s - Math.floor(s / 0.72) * 0.72 < 0.3, zf = z / F, row = y * W;
+    const x0 = Math.max(0, Math.ceil(cx - hw - 0.5)), x1 = Math.min(W - 1, Math.floor(cx + hw - 0.5));
+    for (let x = x0; x <= x1; x++) {
+      const X = (x + 0.5 - cx) * zf, ax = X < 0 ? -X : X;
+      if (sl || (ax > 0.42 && ax < 0.62)) FB[row + x] = lit(M_TIMB, s, X, 0, z, x, y, sl ? 0.03 : -0.02);
+    }
+  }
+}
+function trestle(zp, j) {
+  if (zp < NEAR + 0.2) return;
+  atDepth(zp);
+  const iz = 1 / zp, pw = Math.max(1, Math.round(0.22 * F * iz)), yTop = Math.round(QRY), yBot = Math.round(QRY + 26 * F * iz), s = sc + zp;
+  for (let side = -1; side <= 1; side += 2) {
+    const xc = Math.round(QCX + side * 0.8 * F * iz);
+    for (let y = Math.max(IMG_TOP, yTop); y <= Math.min(IMG_BOT - 1, yBot); y++) {
+      const h = (QRY - y) * zp / F, c = lit(M_TIMB, s, side * 0.8, h, zp, xc, y, 0);
+      for (let k = 0; k < pw; k++) { const x = xc - (pw >> 1) + k; if (x >= 0 && x < W) FB[y * W + x] = c; }
+    }
+  }
+  if ((Math.floor(s + 0.5) & 7) === 0) {                               // a cross-brace every other post
+    const x0 = Math.round(QCX - 0.8 * F * iz), x1 = Math.round(QCX + 0.8 * F * iz), y1 = Math.round(QRY + 3 * F * iz);
+    target(FB, W, H, 0, 0); line(x0, yTop + 1, x1, y1, lit(M_TIMB, s, 0, -1.5, zp, x0, yTop, -0.05)); line(x1, yTop + 1, x0, y1, lit(M_TIMB, s, 0, -1.5, zp, x1, yTop, -0.08));
+  }
+}
+function rails(a, b) {
+  for (let side = -1; side <= 1; side += 2) {
+    const xa = RCX[a] + side * 0.53 * F * RIZ[a], xb = RCX[b] + side * 0.53 * F * RIZ[b], ya = RRY[a], yb = RRY[b];
+    const y0 = Math.max(IMG_TOP, Math.ceil(yb - 0.5)), y1 = Math.min(IMG_BOT - 1, Math.floor(ya - 0.5));
+    for (let y = y0; y <= y1; y++) {
+      const u = ya === yb ? 0 : (y + 0.5 - yb) / (ya - yb), x = Math.round(xb + (xa - xb) * u), iz = RIZ[b] + (RIZ[a] - RIZ[b]) * u, z = 1 / iz;
+      if (x < 0 || x >= W) continue;
+      const c = lit(M_IRON, sc + z, side * 0.53, 0.1, z, x, y, 0.15);
+      FB[y * W + x] = c; if (z < 3.2 && x + side >= 0 && x + side < W) FB[y * W + x - side] = c === IR2 || c === FL0 || c === CY3 || c === MG3 || c === DL0 ? IR1 : IR0;
+    }
+  }
+}
+function lowBeam(zb) {
+  if (zb < NEAR + 0.1) return;
+  atDepth(zb);
+  const iz = 1 / zb, w = 1.5 * F * iz, yt = Math.round(QRY - 2.35 * F * iz), yb = Math.round(QRY - 2.0 * F * iz), s = sc + zb;
+  for (let y = Math.max(IMG_TOP, yt); y <= Math.min(IMG_BOT - 1, yb); y++) for (let x = Math.max(0, Math.round(QCX - w)); x <= Math.min(W - 1, Math.round(QCX + w)); x++)
+    FB[y * W + x] = lit(M_TIMB, s, (x - QCX) * zb / F, 2.1, zb, x, y, y === yb ? -0.1 : 0.03);
+}
+
+// ---------- sprites, built procedurally at every pixel height (never scaled) ----------
+// The camera travels toward everything, so objects grow continuously. Each cluster has one shape, defined in
+// proportions of its height and seeded only by its variant; it is rasterised at every height from CR_MIN to CR_MAX
+// so it grows a pixel at a time instead of jumping between tiers (and never changes shape on the way).
+const CR_MIN = 3, CR_MAX = 96, CR_NT = CR_MAX - CR_MIN + 1;
+const CRB = [], CRBW = new Uint8Array(2 * 4 * CR_NT);
+function buildCrystal(type, v, t) {
+  const h = CR_MIN + t, w = Math.max(3, Math.round(h * 1.25)), buf = new Uint8Array(w * h).fill(CLEAR);
+  target(buf, w, h, 0, 0);
+  const C1 = type ? MG1 : CY1, C2 = type ? MG2 : CY2, C3 = type ? MG3 : CY3;
+  const n = 4 + (v & 1);
+  for (let p = n - 1; p >= 0; p--) {
+    const hp = h * (p === 0 ? 1 : 0.4 + hash(v * 31 + p * 7) * 0.38), bw = Math.max(1, hp * 0.34);
+    if (hp < 1.5) continue;                                            // side prisms too small to draw at this height
+    const cxp = (w - 1) / 2 + (p === 0 ? 0 : ((p & 1) ? 1 : -1) * (w * 0.16 + p * w * 0.05));
+    const lean = (p === 0 ? (v - 1.5) * 0.07 : ((p & 1) ? 1 : -1) * 0.38) * hp;
+    for (let r = 0; r < hp; r++) {
+      const fr = r / hp, half = fr < 0.7 ? bw / 2 : (bw / 2) * (1 - fr) / 0.3, c = cxp + lean * fr, y = h - 1 - r;
+      const xl = Math.round(c - half), xr = Math.round(c + half);
+      for (let x = xl; x <= xr; x++) px(x, y, x === xl ? C3 : x <= c ? C2 : C1);
+    }
+    px(Math.round(cxp + lean), h - Math.round(hp), C3);
+  }
+  CRB[(type * 4 + v) * CR_NT + t] = buf; CRBW[(type * 4 + v) * CR_NT + t] = w;
+}
+const LT_MIN = 2, LT_NT = 27, LTB = [];
+function buildLantern(t) {
+  const h = LT_MIN + t, w = Math.max(1, Math.round(h * 0.6)), buf = new Uint8Array(w * h).fill(CLEAR);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const edge = x === 0 || x === w - 1, cap = y === 0 || y === h - 1, bar = w > 4 && x === (w >> 1) && h > 7;
+    buf[y * w + x] = h < 4 ? FL1 : cap ? IR0 : edge && w > 2 ? IR1 : bar ? IR0 : y < h * 0.35 ? FL1 : FL0;
+  }
+  if (h >= 6) { buf[(h >> 1) * w + (w >> 1)] = FL0; if (w > 2) buf[1 * w + (w >> 1)] = IR1; }
+  LTB[t] = buf;
+}
+function blitSprite(buf, w, h, x0, y0) {
+  for (let y = 0; y < h; y++) { const Y = y0 + y; if (Y < IMG_TOP || Y >= IMG_BOT) continue; for (let x = 0; x < w; x++) { const X = x0 + x, v = buf[y * w + x]; if (v !== CLEAR && X >= 0 && X < W) FB[Y * W + X] = v; } }
+}
+const CYG = makeLUT([K1, CY0, VD0, CY0, VD1, CY0, RK0, CY0, RK1, CY0, RK2, CY1, GR0, CY0, TM0, CY0, CY0, CY1, MG0, CY0]);
+const MGG = makeLUT([K1, MG0, VD0, MG0, VD1, MG0, RK0, MG0, RK1, MG0, RK2, MG1, GR0, MG0, TM0, MG0, MG0, MG1, CY0, MG0]);
+const WARMG = makeLUT([K1, TM0, VD0, TM0, VD1, TM0, RK0, TM1, RK1, RW0, RK2, RW0, RK3, RW1, TM0, TM1, TM1, TM2, TM2, TM3, GR0, RW0]);
+function drawSprite(i) {
+  let z = SPS[i] - sc; if (z < 0) z += TL; if (z < NEAR + 0.4 || z > 50) return;
+  atDepth(z);
+  const iz = 1 / z, sx = QCX + SPX[i] * F * iz, by = QRY - SPH[i] * F * iz, hp = SPZ[i] * F * iz;
+  if (sx < -60 || sx > W + 60) return;
+  const fade = z > 30 ? 1 - (z - 30) / 20 : 1;
+  if (SPT[i] === 0) {                                                  // lantern on a support post
+    const t = clamp(Math.round(hp) - LT_MIN, 0, LT_NT - 1), h = LT_MIN + t, w = Math.max(1, Math.round(h * 0.6)), x0 = Math.round(sx - w / 2), y0 = Math.round(by - h);
+    target(FB, W, H, 0, 0);
+    glow(sx, by - h / 2, Math.min(10, h * 1.2 + 2), Math.min(9, h + 2), WARMG, 7 * fade);
+    blitSprite(LTB[t], w, h, x0, y0);
+    if (h >= 4) px(x0 + (w >> 1), y0 + (h >> 1), cyc(40, SPS[i]) > -0.3 ? FL0 : FL1);   // candle flicker (whole cycles per loop)
+    const bx = Math.round(sx + (SPV[i] ? 1 : -1) * w * 0.8);                            // bracket back to the post
+    line(bx, y0, Math.round(sx), y0, TM1);
+  } else {                                                             // crystal cluster, emissive
+    const type = SPT[i] - 1;
+    if (hp < 2.5) { target(FB, W, H, 0, 0); px(Math.round(sx), Math.round(by - 1), fade > 0.6 ? (type ? MG2 : CY2) : (type ? MG1 : CY1)); return; }
+    const t = clamp(Math.round(hp) - CR_MIN, 0, CR_NT - 1), k = (type * 4 + SPV[i]) * CR_NT + t, h = CR_MIN + t, w = CRBW[k];
+    target(FB, W, H, 0, 0);
+    glow(sx, by - h * 0.45, Math.min(9, w * 0.5 + 2), Math.min(8, h * 0.45 + 2), type ? MGG : CYG, 6 * fade);
+    blitSprite(CRB[k], w, h, Math.round(sx - w / 2), Math.round(by - h));
+  }
+}
+
+// ---------- the cart and its rider (back view, one fixed tier: the cart rides 6 m ahead) ----------
+const CBW = 40, CBH = 48, CAX = 20, CAY = 44;
+const CBUF = new Uint8Array(CBW * CBH);
+function drawCart(duck, look, up, hold, lean) {
+  CBUF.fill(CLEAR); target(CBUF, CBW, CBH, CAX, CAY);
+  const dy = Math.round(duck * 7), lx = Math.round(lean), hx = lx + Math.round(look * 1.4), hy = -33 + dy;
+  // rider: shoulders + jacket, arms to the rim, hair, helmet
+  for (let y = -30 + dy; y <= -21; y++) { const hw = y < -28 + dy ? 5 : 6; hline(-hw + lx, hw - 1 + lx, y, JK0); }
+  vline(lx, -27 + dy, -22, JK1);
+  const ax = hold > 0.5 ? 10 : 8;
+  line(-5 + lx, -28 + dy, -ax, -23, JK0); line(-6 + lx, -28 + dy, -ax - 1, -23, JK0);
+  line(4 + lx, -28 + dy, ax - 1, -23, JK0); line(5 + lx, -28 + dy, ax, -23, JK0);
+  hline(-2 + hx, 1 + hx, hy + 1, HR); hline(-3 + hx, 2 + hx, hy + 2, HR);
+  for (let r = 0; r < 5; r++) { const hw = r === 0 ? 2 : r === 1 ? 3 : 4; hline(-hw + hx, hw - 1 + hx, hy - 5 + r + (up > 0.5 ? 1 : 0), HT0); }
+  hline(-5 + hx, 4 + hx, hy, HT1);
+  if (look !== 0) { const sd = look > 0 ? 1 : -1; px(hx + sd * 4 - (sd > 0 ? 1 : 0), hy + 1, SK0); px(hx + sd * 5 - (sd > 0 ? 1 : 0), hy - 2, FL0); }
+  // cart: iron rim, planks with seams, straps and rivets, wheels under the box
+  for (let y = -23; y <= -7; y++) {
+    const hw = y < -20 ? 13 : 12;
+    for (let x = -hw; x < hw; x++) {
+      let c = ((y + 23) % 4) === 3 ? CA0 : CA1;
+      if (y <= -22) c = y === -23 ? CA3 : CA2;
+      if (x === -hw || x === hw - 1 || x === -5 || x === 4) c = y <= -22 ? CA3 : CA2;
+      if ((x === -5 || x === 4) && ((y + 23) % 4) === 3) c = CA3;
+      if (y === -7) c = CA2;
+      px(x, y, c);
+    }
+  }
+  if (hold > 0.5) { px(-11, -23, SK0); px(-10, -23, SK0); px(9, -23, SK0); px(10, -23, SK0); }
+  hline(-7, 6, -3, CA2);
+  for (let s = -1; s <= 1; s += 2) { const wx = s * 9 - (s > 0 ? 1 : 0); ellipse(wx + 0.5, -3.5, 3.6, 3.6, CA2); px(wx, -4, IR1); }
+}
+
+// ---------- headlamp beam and the daylight shaft as dithered volumes (dust in the air) ----------
+function beamVolume() {
+  for (let d = 0.6; d < 26; d += d < 6 ? 0.5 : 1.2) {
+    const z = CART_Z + d; atDepth(z);
+    const iz = 1 / z, X = lampYaw * d, hgt = LAMPH + lampPitch * d, r = (0.12 + d * 0.21) * F * iz;
+    const cx = QCX + X * F * iz, cy = QRY - hgt * F * iz, lv = 9 * (1 - d / 26) * headI;
+    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(W - 1, Math.ceil(cx + r)), y0 = Math.max(IMG_TOP, Math.floor(cy - r)), y1 = Math.min(IMG_BOT - 1, Math.ceil(cy + r));
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const u = (x + 0.5 - cx) / r, v = (y + 0.5 - cy) / r, q = u * u + v * v; if (q >= 1) continue;
+      const l = lv * (1 - q), i = y * W + x; if (l > LV[i]) { LV[i] = l; LITM[i] = 1; }
+    }
+  }
+}
+const SHAFT_S = 146;
+function shaftVolume(z) {
+  if (z < NEAR + 0.3) return;
+  atDepth(z);
+  // a slanting column from the crack (lateral -3 m, roof) to the deck (lateral -1 m), fading below the rails
+  const iz = 1 / z, top = QRY - 17 * F * iz, bot = QRY + 5 * F * iz, cxTop = QCX - 3.2 * F * iz, cxBot = QCX - 0.8 * F * iz, hw = 0.95 * F * iz;
+  const y0 = Math.max(IMG_TOP, Math.floor(top)), y1 = Math.min(IMG_BOT - 1, Math.ceil(bot));
+  let cx = cxTop;
+  for (let y = y0; y <= y1; y++) {
+    const f = (y - top) / (bot - top); cx = cxTop + (cxBot - cxTop) * Math.min(1, f * 1.3);
+    const lv = 10 * (0.5 + 0.5 * Math.min(1, f * 1.6)) * (f > 0.78 ? Math.max(0, (1 - f) / 0.22) : 1);
+    const x0 = Math.max(0, Math.floor(cx - hw)), x1 = Math.min(W - 1, Math.ceil(cx + hw));
+    for (let x = x0; x <= x1; x++) { const u = (x + 0.5 - cx) / hw, l = lv * (1 - u * u), i = y * W + x; if (l > bay(x, y) * 0.6 + 1.5 && ((x + y) & 1 || l > 8.5)) { FB[i] = DAYL[FB[i]]; LITM[i] = 2; } }   // translucent: dithered core, sparser edge
+  }
+  target(FB, W, H, 0, 0);
+  for (let k = -2; k <= 2; k++) px(Math.round(cxTop + k * hw * 0.3), Math.round(top), k === 0 ? DL0 : DL1);   // the crack in the roof
+}
+function applyLV() {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) { const i = y * W + x, l = LV[i]; if (!l) continue; LV[i] = 0; if (l > bay(x, y)) FB[i] = LIGHT[FB[i]]; }
+}
+
+// ---------- bats (in the cavern), sparks (pooled), dust motes, title card ----------
+function bats() {
+  if (sc < 86 || sc > 180) return;
+  const vis = Math.min(1, (sc - 86) / 6, (180 - sc) / 6);
+  target(FB, W, H, 0, 0);
+  for (let k = 0; k < 5; k++) {
+    const z = 11 + k * 2.6, X = 4.5 * Math.sin(TAU * (3 + k) * gT / LOOP + k * 1.7), h = 4.5 + 1.8 * Math.sin(TAU * (5 + k) * gT / LOOP + k * 2.3);
+    atDepth(z);
+    const iz = 1 / z, x = Math.round(QCX + X * F * iz), y = Math.round(QRY - h * F * iz); if (hash(k * 5 + 1) > vis) continue;
+    const up = ((frame >> 2) + k) & 1, sp = z < 14 ? 3 : 2;
+    px(x, y, BT0); px(x, y + 1, BT0);
+    for (let s = 1; s <= sp; s++) { const wy = y + (up ? -((s + 1) >> 1) : (s >> 1)); px(x - s, wy, BT1); px(x + s, wy, BT1); }
+  }
+}
+const SPN = 90, SPX_ = new Float32Array(SPN), SPY_ = new Float32Array(SPN), SVX = new Float32Array(SPN), SVY = new Float32Array(SPN), SAGE = new Float32Array(SPN), SLIFE = new Float32Array(SPN);
+let spHead = 0;
+function emitSpark(x, y, vx, vy, life) { const i = spHead; spHead = (spHead + 1) % SPN; SPX_[i] = x; SPY_[i] = y; SVX[i] = vx; SVY[i] = vy; SAGE[i] = 0; SLIFE[i] = life; }
+function stepSparks() { for (let i = 0; i < SPN; i++) { if (SLIFE[i] <= 0) continue; SAGE[i] += STEP; if (SAGE[i] >= SLIFE[i]) { SLIFE[i] = 0; continue; } SVY[i] += 300 * STEP; SPX_[i] += SVX[i] * STEP; SPY_[i] += SVY[i] * STEP; } }
+function drawSparks() {
+  target(FB, W, H, 0, 0);
+  for (let i = 0; i < SPN; i++) {
+    if (SLIFE[i] <= 0) continue;
+    const a = SAGE[i] / SLIFE[i], c = a < 0.2 ? FL0 : a < 0.45 ? FL1 : a < 0.75 ? FL2 : FL3, x = Math.round(SPX_[i]), y = Math.round(SPY_[i]);
+    px(x, y, c); if (a < 0.4) px(x - Math.sign(SVX[i]), y - 1, FL2);
+  }
+}
+function motes() {
+  for (let k = 0; k < 46; k++) {
+    let x = hash(k * 3 + 1) * W + 9 * Math.sin(TAU * 4 * gT / LOOP + k); x = ((x % W) + W) % W;
+    let y = hash(k * 3 + 2) * (IMG_BOT - IMG_TOP) + (IMG_BOT - IMG_TOP) * (k % 3 + 1) * gT / LOOP; y = (y % (IMG_BOT - IMG_TOP)) + IMG_TOP;
+    const i = Math.floor(y) * W + Math.floor(x), m = LITM[i];
+    if (m) FB[i] = m === 2 ? DL0 : (k & 1) ? FL0 : FL1;
+  }
+}
+function titleCard() {
+  const t = gT, a = t < 0.5 || t > 5.6 ? 0 : t < 1.5 ? (t - 0.5) : t > 4.6 ? (5.6 - t) : 1;
+  if (a <= 0) return;
+  const x0 = Math.round((W - TMASK_W) / 2), y0 = IMG_TOP + 16, lv = a * 16;
+  for (let pass = 0; pass < 2; pass++) for (let y = 0; y < TMASK_H; y++) for (let x = 0; x < TMASK_W; x++) {
+    if (!TMASK[y * TMASK_W + x]) continue;
+    const X = x0 + x + (pass ? 0 : 1), Y = y0 + y + (pass ? 0 : 1);   // drop shadow first, then the letters
+    if (lv > bay(X, Y)) FB[Y * W + X] = pass ? TX0 : K0;
+  }
+}
+
+// ---------- bake, update, render ----------
+const LV = new Uint8Array(W * H), LITM = new Uint8Array(W * H);
+const SPORD = new Uint8Array(SMAX), SPST = new Uint8Array(TL), SPCN = new Uint8Array(TL);
+function bake() {
+  buildTrackObjects(); buildLightLists(); buildTitle();
+  for (let ty = 0; ty < 2; ty++) for (let v = 0; v < 4; v++) for (let t = 0; t < CR_NT; t++) buildCrystal(ty, v, t);
+  for (let t = 0; t < LT_NT; t++) buildLantern(t);
+  for (let i = 0; i < SN; i++) SPORD[i] = i;                           // sprites sorted by s, then indexed per metre
+  const ord = Array.from(SPORD.subarray(0, SN)).sort((a, b) => SPS[a] - SPS[b]);
+  for (let i = 0; i < SN; i++) SPORD[i] = ord[i];
+  for (let k = 0; k < TL; k++) { SPST[k] = 0; SPCN[k] = 0; }
+  for (let i = SN - 1; i >= 0; i--) { const k = Math.floor(SPS[SPORD[i]]) % TL; SPST[k] = i; SPCN[k]++; }
+  buildVignette(2);
+}
+// rider beats, as functions of loop time (the cart is CART_Z ahead of the camera)
+function win(t, a, b, e) { return t <= a - e || t >= b + e ? 0 : t < a ? easeSine((t - a + e) / e) : t > b ? 1 - easeSine((t - b) / e) : 1; }
+const T_DUCK = (LOW_BEAM - CART_Z) / SPEED, T_CAMDUCK = LOW_BEAM / SPEED, T_SHAFT = (SHAFT_S - CART_Z) / SPEED;
+const T_BR0 = (104 - CART_Z) / SPEED, T_BR1 = (160 - CART_Z) / SPEED;
+let rDuck = 0, rLook = 0, rUp = 0, rHold = 0, rLean = 0, lastPose = -1, cartX = 0, cartY = 0, cartC = 0;
+let rimL = CLEAR, rimR = CLEAR, rimT = CLEAR;
+function update() {
+  const t = gT;
+  sc = (SPEED * t) % TL;
+  camH = 2.6 - 0.85 * win(t, T_CAMDUCK - 0.2, T_CAMDUCK + 0.2, 0.55);
+  // rider pose on a 12 fps grid
+  const slot = Math.floor(frame / 5);
+  if (slot !== lastPose) {
+    lastPose = slot; const tq = slot * 5 / 60;
+    rDuck = win(tq, T_DUCK - 0.45, T_DUCK + 0.45, 0.35);
+    rLook = -win(tq, 14.2, 17, 0.5) + win(tq, 27.2, 30, 0.5);
+    rUp = win(tq, T_SHAFT - 0.9, T_SHAFT + 1.0, 0.4);
+    rHold = win(tq, T_BR0, T_BR1, 0.3);
+    const kc = Math.floor(sc + CART_Z) % TL; cartC = SEGC[kc];
+    rLean = clamp(-cartC / 0.022 * 2, -2, 2);
+    drawCart(rDuck, rLook, rUp, rHold, rLean);
+  }
+  lampYaw = rLook * 0.32; lampPitch = rUp * 0.28 - rDuck * 0.12;
+  // sparks from the outer wheel on the tight bends
+  const kc = Math.floor(sc + CART_Z) % TL, c = SEGC[kc];
+  if (Math.abs(c) > 0.012) {
+    const outer = c < 0 ? 1 : -1, n = Math.abs(c) > 0.018 ? 2 : 1;
+    for (let q = 0; q < n; q++) { const h1 = hash(frame * 3 + q), h2 = hash(frame * 7 + q + 11); emitSpark(cartX + outer * (9 + h1 * 2), cartY - 1, outer * (25 + h1 * 45), -(25 + h2 * 55), 0.25 + h2 * 0.3); }
+  }
+  buildRings(); atDepth(CART_Z); cartX = Math.round(QCX); cartY = Math.round(QRY);   // also valid for seeks, which skip render
+  stepSparks();
+}
+function rimFromLights() {
+  // each screen side of the rider takes the colour of the strongest light on that side; the shaft lights the top
+  const s0 = sc + CART_Z, k = Math.floor(s0) % TL, i0 = LLS[k], n = LLN[k];
+  let bl = 0.18, br = 0.18, bt = 0.35; rimL = CLEAR; rimR = CLEAR; rimT = CLEAR;
+  for (let j = 0; j < n; j++) {
+    const L = LIDX[i0 + j]; let dz = LS[L] - s0; if (dz > TL / 2) dz -= TL; else if (dz < -TL / 2) dz += TL;
+    const d2 = dz * dz + LXl[L] * LXl[L] + (LHh[L] - 1.3) * (LHh[L] - 1.3), c = LI[L] / (1 + d2 * LR2[L]);
+    if (LT[L] === T_DAY) { if (c > bt) { bt = c; rimT = RIMC[T_DAY]; } }
+    else if (LXl[L] < 0) { if (c > bl) { bl = c; rimL = RIMC[LT[L]]; } }
+    else if (c > br) { br = c; rimR = RIMC[LT[L]]; }
+  }
+}
+function render() {
+  FB.fill(VD0, IMG_TOP * W, IMG_BOT * W); LITM.fill(0);
+  buildRings();
+  for (let j = NR - 1; j >= 0; j--) {
+    const a = j, b = j + 1, k = RK[j], fh = SEGF[k];
+    AMB = SEGK[k] ? 0.045 : 0.02;
+    floorQuad(a, b, fh);
+    if (j < NR - 1 && SEGF[RK[b]] > fh) stepFace(b, fh, SEGF[RK[b]]);
+    wallQuad(a, b, -1, fh); wallQuad(a, b, 1, fh); ceilQuad(a, b);
+    if (SEGK[k] === 2) { bridgeDeck(a, b); if ((k & 3) === 0) trestle(RZ[j] + (j === 0 ? 0 : 0), j); }
+    rails(a, b);
+    if (k === LOW_BEAM) lowBeam(RZ[b] - 0.5);
+    if (k === SHAFT_S) shaftVolume(RZ[a] + 0.5);
+    for (let q = SPST[k] + SPCN[k] - 1; q >= SPST[k] && SPCN[k] > 0; q--) drawSprite(SPORD[q]);
+  }
+  AMB = 0.05;
+  beamVolume(); applyLV();
+  motes();
+  bats();
+  rimFromLights();
+  blitLit(CBUF, CBW, CBH, cartX - CAX, cartY - CAY, false, rimR, rimL, rimT, CLEAR, 0, 2, SHADE, 3, LIGHT);
+  drawSparks();
+  titleCard();
+  applyVignette(SHADE); frameBars(K0);
+}
+NORIM[CA2] = NORIM[CA3] = NORIM[HT0] = 1;                            // iron and the helmet's gloss keep their own highlight
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

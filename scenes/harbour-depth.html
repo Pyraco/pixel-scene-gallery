@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbour Lights - depth</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+// ---------- shared by all harbour projections: URL query -> option constants ----------
+// Options come from the query string and/or the hash (#time=night&weather=rain), so they still arrive
+// when a host strips the query (the shared gallery passes both).
+const QS = {};
+{
+  const L = typeof location !== 'undefined' ? location : null;
+  const s = (L && L.search ? L.search.slice(1) : '') + '&' + (L && L.hash ? L.hash.slice(1) : '');
+  const parts = s.split('&');
+  for (let i = 0; i < parts.length; i++) { if (!parts[i] || parts[i].indexOf('=') < 0) continue; const kv = parts[i].split('='); QS[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || ''); }
+}
+function qopt(k, def, allowed) { const v = QS[k]; return v !== undefined && allowed.indexOf(v) >= 0 ? v : def; }
+const O_TIME = qopt('time', 'golden', ['golden', 'midday', 'night', 'overcast']);
+const O_WEATHER = qopt('weather', 'clear', ['clear', 'rain', 'fog', 'snow']);
+const O_SUBJ = +qopt('subjects', '2', ['0', '1', '2', '3']);
+const O_CAMERA = qopt('camera', 'dolly', ['dolly', 'locked', 'drift', 'cuts']);
+const O_DITHER = qopt('dither', 'medium', ['soft', 'medium', 'strong']);
+const O_PAL = +qopt('palette', '48', ['16', '48']);
+const O_DETAIL = qopt('detail', 'balanced', ['minimal', 'balanced', 'rich']);
+const O_FRAME = qopt('frame', 'letterbox', ['letterbox', 'full']);
+const O_PRACT = qopt('practical', 'medium', ['subtle', 'medium', 'strong']);
+const O_ENV = qopt('env', 'exterior', ['exterior', 'interior']);
+const FX = (QS.fx || '').split(',');
+function fxOn(name) { return FX.indexOf('no' + name) < 0; }
+const DK = O_DITHER === 'soft' ? 0.5 : O_DITHER === 'strong' ? 1.5 : 1;      // dithered transition width
+const SPK = O_DITHER === 'soft' ? 0.35 : O_DITHER === 'strong' ? 1.3 : 1;    // texture speckle density
+const DETAIL_N = O_DETAIL === 'minimal' ? 0 : O_DETAIL === 'rich' ? 2 : 1;
+const PRACT = O_PRACT === 'subtle' ? 0.6 : O_PRACT === 'strong' ? 1.45 : 1;
+const NIGHT = O_TIME === 'night', OVERCAST = O_TIME === 'overcast' || O_WEATHER === 'rain' || O_WEATHER === 'fog', MIDDAY = O_TIME === 'midday';
+const LAMPS_ON = !MIDDAY;                                          // dusk, night and grey days: the harbour lights are on
+const CONE_K = O_WEATHER === 'fog' ? 1 : O_WEATHER === 'rain' ? 0.9 : O_WEATHER === 'snow' ? 0.8 : 0.4;   // light cones need something in the air
+
+/* ==========================================================================
+   "Harbour Lights" - DEPTH projection. Same story, palette roles and URL switches as the side reference;
+   the camera stands on the quay looking along it toward the quay end, the sea, the lighthouse and the sun.
+   Projection-specific choices: CAMERA_HEIGHT raised (3 m) · SHOTS static-hold (locked camera) ·
+   subjects 0/1/2 (subjects=3 behaves as 2) · env=interior not available in this projection.
+   ========================================================================== */
+const TITLE = 'Harbour Lights - depth';
+const W = 320, H = 180, IMG_TOP = O_FRAME === 'full' ? 0 : 23, IMG_BOT = O_FRAME === 'full' ? 180 : 157;
+const LOOP_FRAMES = 3840;
+const SEED = 5, OUTPUT_MODE = qopt('output', 'loop', ['loop', 'still']), STILL_T = 30.2, DEBUG_KEYS = true, EXPORT_SCALES = [1, 4];
+const WW = W, WH = H;
+
+// ---------- palette: fixed colour ROLES; time of day re-grades the same roles (drawing code never changes) ----------
+// Golden-hour reference values. Types: f fixed · s sky/sea set (authored per time) · l lit · m mid · d shadow · e emissive · r rim
+const ROLE_HEX = [
+  '#0c0a12', '#1c1726',                                                    // 0-1   near-blacks
+  '#f2a36b', '#f5c47f', '#c9a2b0', '#7f8ab5',                              // 2-5   sky: horizon -> zenith
+  '#fff4d8', '#ffd88f',                                                    // 6-7   sun disc, glow (moon at night)
+  '#c79aa6', '#9a7f9e', '#5f5478',                                         // 8-10  far headland
+  '#ffe6a8', '#d99a7c', '#8a6f8e', '#4a4a6e',                              // 11-14 sea: glint -> harbour deep
+  '#d9c3a0', '#a3917e', '#6b5d5a',                                         // 15-17 quay stone
+  '#c98f58', '#8a5a3e', '#4f3530',                                         // 18-20 timber
+  '#c8453c', '#efe0bd', '#b89a6a',                                         // 21-23 awning red, cream, net/rope
+  '#3f6d9a', '#28405e',                                                    // 24-25 boat paint
+  '#d6dde3', '#7d8a99',                                                    // 26-27 fish silver
+  '#f1c29b', '#cc8d6b', '#8e5a4e',                                         // 28-30 skin
+  '#f2c230', '#b07a1f', '#3a4868', '#232b40', '#cfc8c0',                   // 31-35 oilskin, trousers, grey beard
+  '#e79a4a', '#a45f2e',                                                    // 36-37 ginger cat
+  '#ffd98a', '#f0903a',                                                    // 38-39 lamp glow, flame
+  '#f4f1ea', '#7d8f4a', '#3f5642',                                         // 40-42 gull/snow white, weed, weed dark
+  '#ffc451',                                                               // 43    rim
+  '#3fa39a', '#276b6a', '#3e4152', '#b8c6dc'                               // 44-47 child coat, iron, snow shade
+];
+const ROLE_T = 'ffsssssssssssssl' + 'mdlmdmlmmdlmlmdlmmdllmeellldrmddm';
+const SKYSET = {                                                           // SKY0-3, SUN0-1, HAZ0-2, SEA0-3, RIM
+  golden: ['#f2a36b', '#f5c47f', '#c9a2b0', '#7f8ab5', '#fff4d8', '#ffd88f', '#c79aa6', '#9a7f9e', '#5f5478', '#ffe6a8', '#d99a7c', '#8a6f8e', '#4a4a6e', '#ffc451'],
+  midday: ['#d4eaf4', '#aad3ec', '#80b7e3', '#5c94d1', '#ffffff', '#fff6d8', '#a9c2d0', '#86a6b8', '#5d7f92', '#f4fbff', '#8fc3d8', '#4f8fb4', '#2f5f86', '#fff0c8'],
+  night: ['#35406c', '#252e55', '#18203f', '#0f1329', '#eef2ff', '#9fb0d8', '#3a4468', '#2a3152', '#1c2140', '#cfdcff', '#2e3a62', '#1f2848', '#141a33', '#b9ceff'],
+  overcast: ['#bfc2c8', '#aaaeb6', '#959aa4', '#80858f', '#dcdee2', '#c9ccd2', '#9aa0a8', '#7f858f', '#626873', '#c9d0d8', '#8e98a3', '#6b7683', '#4c5663', '#d9dbe0']
+};
+const TINT_KEY = { golden: [1.10, 0.95, 0.78], midday: [1.06, 1.05, 1.0], night: [0.42, 0.48, 0.72], overcast: [0.86, 0.88, 0.92] };
+const TINT_AMB = { golden: [0.80, 0.84, 1.0], midday: [0.86, 0.9, 1.0], night: [0.26, 0.29, 0.47], overcast: [0.72, 0.74, 0.8] };
+const PAL_HEX = [];
+{
+  const tk = (O_WEATHER === 'rain' || O_WEATHER === 'fog') && O_TIME === 'golden' ? 'overcast' : O_TIME;   // rain and fog dull golden hour
+  const sky = SKYSET[tk];
+  const hx = (r, g, b) => '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+  let si = 0;
+  for (let i = 0; i < ROLE_HEX.length; i++) {
+    const t = ROLE_T[i];
+    if (t === 's') { PAL_HEX.push(sky[si++]); continue; }
+    if (t === 'r') { PAL_HEX.push(sky[13]); continue; }
+    if (t === 'f' || t === 'e') { PAL_HEX.push(ROLE_HEX[i]); continue; }
+    const v = parseInt(ROLE_HEX[i].slice(1), 16), rgb = [v >> 16, (v >> 8) & 255, v & 255];
+    const w = t === 'l' ? 1 : t === 'm' ? 0.5 : 0;                                        // lit -> key tint, shadow -> ambient
+    const out = [0, 0, 0];
+    for (let c = 0; c < 3; c++) {
+      const g = TINT_KEY.golden[c] * w + TINT_AMB.golden[c] * (1 - w), n = TINT_KEY[tk][c] * w + TINT_AMB[tk][c] * (1 - w);
+      out[c] = rgb[c] / g * n;
+    }
+    if (tk === 'overcast') { const l = (out[0] + out[1] + out[2]) / 3; for (let c = 0; c < 3; c++) out[c] = out[c] * 0.65 + l * 0.35; }
+    if (O_WEATHER === 'snow') { out[0] *= 0.96; out[2] *= 1.04; }
+    PAL_HEX.push(hx(out[0], out[1], out[2]));
+  }
+}
+const K0 = 0, K1 = 1, SKY0 = 2, SKY1 = 3, SKY2 = 4, SKY3 = 5, SUN0 = 6, SUN1 = 7, HAZ0 = 8, HAZ1 = 9, HAZ2 = 10,
+      SEA0 = 11, SEA1 = 12, SEA2 = 13, SEA3 = 14, ST0 = 15, ST1 = 16, ST2 = 17, WD0 = 18, WD1 = 19, WD2 = 20,
+      CLR = 21, CLC = 22, NET = 23, B0 = 24, B1 = 25, FS0 = 26, FS1 = 27, SK0 = 28, SK1 = 29, SK2 = 30,
+      Y0 = 31, Y1 = 32, TR0 = 33, TR1 = 34, GRY = 35, C0 = 36, C1 = 37, L0 = 38, L1 = 39, G0 = 40, GR0 = 41, GR1 = 42,
+      RIM = 43, KC = 44, KC1 = 45, IRON = 46, SNOW = 47;
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+
+// ---------- remap tables (role-based, so they hold for every time of day) ----------
+const SHADE = makeLUT([SKY0, SKY1, SKY1, SKY2, SKY2, SKY3, SKY3, K1, SUN0, SUN1, SUN1, SKY0, HAZ0, HAZ1, HAZ1, HAZ2, HAZ2, K1,
+  SEA0, SEA1, SEA1, SEA2, SEA2, SEA3, SEA3, K1, ST0, ST1, ST1, ST2, ST2, K1, WD0, WD1, WD1, WD2, WD2, K1, CLR, WD1, CLC, NET, NET, WD1,
+  B0, B1, B1, K1, FS0, FS1, FS1, ST2, SK0, SK1, SK1, SK2, SK2, WD2, Y0, Y1, Y1, WD1, TR0, TR1, TR1, K1, GRY, ST1, C0, C1, C1, WD2,
+  L0, L1, L1, WD1, G0, SNOW, SNOW, ST1, GR0, GR1, GR1, K1, RIM, Y0, KC, KC1, KC1, K1, IRON, K1, K1, K0]);
+const LIGHT = makeLUT([K0, K1, K1, IRON, IRON, ST2, SKY3, SKY2, SKY2, SKY1, SKY1, SKY0, SKY0, SUN1, SUN1, SUN0, HAZ2, HAZ1, HAZ1, HAZ0,
+  SEA3, SEA2, SEA2, SEA1, SEA1, SEA0, ST2, ST1, ST1, ST0, WD2, WD1, WD1, WD0, B1, B0, FS1, FS0, SK2, SK1, SK1, SK0, Y1, Y0, TR1, TR0,
+  C1, C0, L1, L0, SNOW, G0, GR1, GR0, KC1, KC, NET, CLC]);
+// warm practical light (lantern, lamps): one step brighter/warmer within each material (D3)
+const LIGHT_L = makeLUT([K1, WD2, IRON, ST2, ST2, ST1, ST1, ST0, ST0, CLC, WD2, WD1, WD1, WD0, SEA3, SEA2, SEA2, SEA1, TR1, TR0, Y1, Y0,
+  SK2, SK1, SK1, SK0, C1, C0, FS1, FS0, B1, B0, GR1, GR0, NET, CLC, KC1, KC, SNOW, G0, HAZ2, HAZ1, SKY3, SKY2, SKY2, SKY1]);
+// one step toward the haze (fog / distance)
+const FOGL = makeLUT([K0, K1, K1, HAZ2, IRON, HAZ2, ST2, HAZ2, ST1, HAZ1, ST0, HAZ0, WD2, HAZ2, WD1, HAZ1, WD0, HAZ0, SEA3, HAZ2, SEA2, HAZ1,
+  SEA1, HAZ0, SEA0, SKY0, HAZ2, HAZ1, HAZ1, HAZ0, HAZ0, SKY0, B1, HAZ2, B0, HAZ1, CLR, HAZ1, CLC, HAZ0, NET, HAZ0, GR1, HAZ2, GR0, HAZ1,
+  SKY3, SKY2, SKY2, SKY1, SKY1, SKY0, SUN1, SKY0, L1, L0]);
+NORIM[IRON] = NORIM[FS0] = NORIM[FS1] = 1;
+// the lamps' own colour: pool cores and halos pick up warm amber (outer falloff uses LIGHT_L: brighter, same material)
+const LAMPC = makeLUT([K1, WD2, IRON, WD2, ST2, WD1, ST1, WD0, ST0, CLC, WD2, WD1, WD1, WD0, WD0, L1, CLR, L1, CLC, L0, NET, L0,
+  SEA3, WD2, SEA2, WD1, SEA1, L1, SEA0, L0, B1, WD2, B0, WD1, FS1, WD0, FS0, CLC, Y1, Y0, Y0, L0, TR1, WD2, TR0, WD1,
+  SK2, SK1, SK1, SK0, SK0, L0, GRY, CLC, C1, C0, C0, L0, G0, L0, SNOW, CLC, GR1, WD2, GR0, WD0, KC1, WD1, KC, WD0,
+  HAZ2, WD2, HAZ1, WD1, HAZ0, L1, SKY3, SKY2, SKY2, SKY1, SKY1, SUN1, SKY0, SUN1, SUN1, L0, RIM, L0, L1, L0]);
+
+// ---------- one-point perspective along the quay (camera 3 m up; the quay runs away from the camera) ----------
+const VPX = 150, HZ = 84, FOC = 100, CAMH = 3.0;
+const QX0 = -4.6, QX1 = 2.6, WATER_H = -1.4, QZ_END = 30, WALL_END = 34;
+function sx3(X, z) { return VPX + X * FOC / z; }
+function sy3(h, z) { return HZ + (CAMH - h) * FOC / z; }
+function wallH(z) { return z < 12 ? 7.4 : z < 22 ? 6.4 : 8.0; }
+const S_SKY = 0, S_QUAY = 1, S_WALL = 2, S_WATER = 3, S_FACE = 4, S_PROP = 5;
+const BG = new Uint8Array(W * H), SURF = new Uint8Array(W * H), ZB = new Float32Array(W * H), PUD = new Uint8Array(W * H);
+function q3(X0, h0, z0, X1, h1, z1, X2, h2, z2, X3, h3, z3, c) {
+  quad(sx3(X0, z0), sy3(h0, z0), sx3(X1, z1), sy3(h1, z1), sx3(X2, z2), sy3(h2, z2), sx3(X3, z3), sy3(h3, z3), c);
+}
+function wallQuad(z0, z1, h0, h1, c) { q3(QX0, h0, z0, QX0, h0, z1, QX0, h1, z1, QX0, h1, z0, c); }
+function line3(X0, h0, z0, X1, h1, z1, c) { line(sx3(X0, z0), sy3(h0, z0), sx3(X1, z1), sy3(h1, z1), c); }
+function box3(X0, X1, h0, h1, z0, z1, cTop, cFront, cSide) {                // box on the quay: front (z0), side facing the centre, top
+  q3(X0, h1, z0, X1, h1, z0, X1, h1, z1, X0, h1, z1, cTop);
+  const sideX = (X0 + X1) / 2 < 0 ? X1 : X0;
+  q3(sideX, h0, z0, sideX, h0, z1, sideX, h1, z1, sideX, h1, z0, cSide);
+  q3(X0, h0, z0, X1, h0, z0, X1, h1, z0, X0, h1, z0, cFront);
+}
+function fogPix(c, z, x, y) {                                                 // flat depth fog: two solid steps, narrow hand-offs
+  const k = O_WEATHER === 'fog' ? 0.45 : 1;
+  if (clamp((z - 13 * k) / 5 * 16, 0, 16) > bay(x, y)) c = FOGL[c];
+  if (clamp((z - 26 * k) / 7 * 16, 0, 16) > bay(x + 2, y + 1)) c = FOGL[c];
+  return c;
+}
+function bakeDepth() {
+  target(BG, W, H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, yy = y + 0.5, dx = x + 0.5 - VPX;
+    let s = S_SKY, z = 1e4, c = CLEAR;
+    if (dx < 0) {                                                              // left: warehouse wall (hit before the quay)
+      const zw = QX0 * FOC / dx, h = CAMH - (yy - HZ) * zw / FOC;
+      if (zw < WALL_END && h >= 0 && h <= wallH(zw)) {
+        s = S_WALL; z = zw;
+        const seg = zw < 12 ? 0 : zw < 22 ? 1 : 2, dzpx = zw * zw / (-QX0 * FOC), dhpx = zw / FOC;
+        const rowH = seg === 1 ? 0.25 : 0.5, row = Math.floor(h / rowH), fr = h / rowH - row, bz = (zw + (row & 1) * 0.3) / (seg === 1 ? 0.6 : 1.1);
+        const joint = (fr < 0.14 && dhpx < rowH * 0.45) || (bz - Math.floor(bz) < 0.08 && dzpx < 0.35);
+        c = seg === 0 ? (joint ? ST1 : CLC) : seg === 1 ? (joint ? WD1 : CLR) : (joint ? ST2 : ST1);
+        if (h > wallH(zw) - 0.3) c = WD2;                                      // parapet
+        if (h < 0.25) c = seg === 0 ? ST1 : ST2;                               // plinth
+      }
+    }
+    if (s === S_SKY && yy > HZ) {
+      const zq = CAMH * FOC / (yy - HZ), Xq = dx * zq / FOC;
+      if (Xq >= QX0 && Xq <= QX1 && zq <= QZ_END) {                           // quay surface: flagstones, coping along the edge
+        s = S_QUAY; z = zq;
+        const band = Math.floor(zq / 0.7), fz = zq / 0.7 - band, fx = (Xq + (band & 1) * 0.45) / 0.9;
+        const dzpx = zq * zq / (CAMH * FOC);
+        const joint = (fz < 0.1 && dzpx < 0.3) || (fx - Math.floor(fx) < 0.06 && zq < 14);
+        c = joint ? ST2 : ST1;
+        if (!joint && zq < 14 && hash(Math.floor(fx) * 31 + band * 7) < 0.3 && bay(x, y) < 8) c = ST0;
+        if (Xq > QX1 - 0.45) c = joint ? ST1 : ST0;                           // lit coping stones
+        if (!joint && zq < 12 && hash(x * 7 + y * 13) < 0.03 * SPK) c = GR1;
+      } else {
+        const zw = (CAMH - WATER_H) * FOC / (yy - HZ), Xw = dx * zw / FOC;
+        if ((Xw > QX1 || zw > QZ_END) && Xw > QX0) {                          // harbour water: darker near, lighter toward the horizon
+          s = S_WATER; z = zw;
+          c = zw < 12 ? SEA3 : zw < 22 ? ((zw - 12) / 10 * 16 > bay(x, y) ? SEA2 : SEA3) : zw < 45 ? SEA2 : ((zw - 45) / 30 * 16 > bay(x, y) ? SEA1 : SEA2);
+        } else if (Xq > QX1) {                                                 // quay side face above the water
+          s = S_FACE; z = QX1 * FOC / dx;
+          const h = CAMH - (yy - HZ) * z / FOC;
+          c = h < -1.1 ? GR1 : (Math.floor(h / 0.45) & 1) ? ST2 : K1;
+          if (c === K1 && bay(x, y) < 12) c = ST2;
+        } else {                                                                // quay end face
+          s = S_FACE; z = QZ_END; c = ST2;
+        }
+      }
+    }
+    BG[i] = c; SURF[i] = s; ZB[i] = z;
+  }
+  // -- facades: windows (some lit), warehouse doors, drainpipes
+  for (let k = 0; k < 14; k++) {
+    const z0 = 7.4 + k * 1.9; if (z0 > WALL_END - 1) break;
+    for (let fl = 0; fl < 2; fl++) {
+      const h0 = 3.1 + fl * 2.0, lit = LAMPS_ON && hash(k * 7 + fl * 3) < (NIGHT ? 0.55 : 0.3);
+      wallQuad(z0, z0 + 0.9, h0, h0 + 1.2, WD2); wallQuad(z0 + 0.06, z0 + 0.84, h0 + 0.08, h0 + 1.12, lit ? L1 : SEA3);
+      if (lit) wallQuad(z0 + 0.2, z0 + 0.7, h0 + 0.3, h0 + 0.9, L0);
+    }
+  }
+  for (let d = 0; d < 2; d++) { const z0 = [12.6, 24.5][d]; wallQuad(z0, z0 + 1.8, 0, 2.9, WD2); wallQuad(z0 + 0.1, z0 + 1.7, 0.05, 2.8, WD1); for (let p = 1; p < 6; p++) line3(QX0, 0.05, z0 + p * 0.3, QX0, 2.8, z0 + p * 0.3, WD2); }
+  for (let p = 0; p < 3; p++) { const z = [7.0, 17.8, 27.5][p]; line3(QX0, 0, z, QX0, wallH(z), z, IRON); }
+  // -- the fish stall: counter with fish on ice, striped awning, posts, sign
+  box3(QX0, -3.8, 0, 1.0, 4.4, 6.4, WD0, WD1, WD1);
+  for (let k = 0; k < 6; k++) { const z = 4.6 + k * 0.3; line3(-4.4, 1.0, z, -3.9, 1.0, z + 0.12, k === 2 ? CLR : FS0); }
+  line3(-3.8, 0, 4.4, -3.8, 1.0, 4.4, WD2);
+  for (let k = 0; k < 8; k++) {
+    const z0 = 4.1 + k * 0.325, z1 = z0 + 0.325;
+    q3(QX0, 2.9, z0, QX0, 2.9, z1, -3.2, 2.3, z1, -3.2, 2.3, z0, (k & 1) ? CLC : CLR);
+  }
+  line3(-3.2, 2.3, 4.1, -3.2, 2.3, 6.7, WD1);
+  line3(-3.25, 0, 4.15, -3.25, 2.3, 4.15, WD2); line3(-3.25, 0, 6.65, -3.25, 2.3, 6.65, WD2);
+  wallQuad(4.6, 6.0, 3.1, 3.6, CLC); for (let k = 0; k < 4; k++) line3(QX0, 3.25, 4.8 + k * 0.3, QX0, 3.45, 4.9 + k * 0.3, WD2);
+  box3(-4.5, -3.95, 0, 0.8, 3.45, 3.9, IRON, IRON, K1); box3(-4.45, -4.0, 0.8, 1.15, 3.5, 3.85, ST2, IRON, IRON);   // soup stove + pot
+  // -- lobster pot (the cat's seat), bottom crate, barrels, bench, net rack, bollards
+  for (let k = 0; k < 5; k++) { const r = 0.32 - k * 0.05; box3(0.2 - r, 0.2 + r, k * 0.1, k * 0.1 + 0.1, 5.45, 5.75, k & 1 ? NET : WD2, NET, WD2); }
+  box3(-4.5, -3.7, 0, 0.5, 10.2, 11.0, WD0, WD1, WD1);
+  for (let b = 0; b < 2; b++) box3(-4.5, -4.0, 0, 0.9, 13.1 + b * 0.6, 13.6 + b * 0.6, WD2, WD1, WD1);
+  box3(-4.5, -4.0, 0.45, 0.55, 15.0, 17.0, WD0, WD1, WD1); line3(-4.5, 0.9, 15.0, -4.5, 0.9, 17.0, WD1);
+  line3(-4.3, 0, 18.5, -4.3, 2.0, 18.5, WD2); line3(-4.3, 0, 20.0, -4.3, 2.0, 20.0, WD2); line3(-4.3, 2.0, 18.5, -4.3, 2.0, 20.0, WD1);
+  for (let k = 0; k < 6; k++) line3(-4.3, 1.9, 18.6 + k * 0.25, -4.3, 0.5, 18.7 + k * 0.25, NET);
+  for (let k = 0; k < 4; k++) { const z = [7, 12, 19, 27][k]; box3(2.2, 2.45, 0, 0.35, z, z + 0.25, IRON, IRON, K1); }
+  // -- lamp posts on the edge side (heads are live)
+  for (let l = 0; l < 3; l++) { const z = LZ3[l]; line3(2.05, 0, z, 2.05, 3.4, z, IRON); line3(2.05, 3.4, z, 1.75, 3.4, z, IRON); }
+  // -- depth fog over everything baked (sky excluded)
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = y * W + x; if (SURF[i] !== S_SKY && BG[i] !== CLEAR) BG[i] = fogPix(BG[i], ZB[i], x, y); }
+  // -- rain puddles on the flagstones
+  if (O_WEATHER === 'rain') for (let k = 0; k < 9; k++) {
+    const X = -3 + hash(k * 13) * 5, z = 4 + hash(k * 29) * 14, r = 0.5 + hash(k) * 0.7;
+    const cx = sx3(X, z), cy = sy3(0, z), rx = r * FOC / z, ry = Math.max(0.7, r * FOC * CAMH / (z * z));
+    for (let y = Math.floor(cy - ry); y <= cy + ry; y++) for (let x = Math.floor(cx - rx); x <= cx + rx; x++) {
+      const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry; if (u * u + v * v > 1 || x < 0 || y < 0 || x >= W || y >= H) continue;
+      const i = y * W + x; if (SURF[i] !== S_QUAY) continue; PUD[i] = 1; BG[i] = ST2;
+    }
+  }
+  target(FB, W, H);
+}
+const LZ3 = new Float32Array([8, 15, 23]);                                    // lamp posts along the edge (z)
+
+// ---------- sky, sun / moon, clouds, headland + lighthouse, water glitter (drawn live, masked by SURF) ----------
+const D_SUNX = MIDDAY ? VPX + 40 : NIGHT ? VPX + 72 : VPX + 30, D_SUNY = MIDDAY ? 30 : NIGHT ? 40 : HZ - 9;
+function drawSkyD() {
+  for (let y = 0; y < H; y++) {
+    const t = clamp(y / HZ, 0, 0.999) * 3, b = Math.floor(t), f = t - b;
+    const A = b === 0 ? SKY3 : b === 1 ? SKY2 : SKY1, B = b === 0 ? SKY2 : b === 1 ? SKY1 : SKY0;
+    const lv = clamp(ri((f - 0.5) / (0.55 * DK) * 16 + 8), 0, 16);
+    for (let x = 0; x < W; x++) { const i = y * W + x; if (SURF[i] === S_SKY) FB[i] = y >= HZ - 2 ? SKY0 : lv > bay(x, y) ? B : A; }
+  }
+  if (NIGHT) for (let k = 0; k < 60; k++) { const x = (hash(k * 7919) * W) | 0, y = (hash(k * 104729) * (HZ - 10)) | 0; if (SURF[y * W + x] === S_SKY && hash(k * 31 + (frame >> 4)) > 0.25) px(x, y, hash(k) > 0.8 ? SUN0 : SUN1); }
+  if (!OVERCAST && O_WEATHER !== 'fog') {                                  // sun / moon + glow, only on sky pixels (never over the wall)
+    const R = MIDDAY ? 22 : 50;
+    for (let y = Math.max(0, D_SUNY - R); y < Math.min(H, D_SUNY + R); y++) for (let x = Math.max(0, D_SUNX - R); x < Math.min(W, D_SUNX + R); x++) {
+      const i = y * W + x; if (SURF[i] !== S_SKY) continue;
+      const dx = x - D_SUNX, dy = (y - D_SUNY) * 1.45, d = Math.sqrt(dx * dx + dy * dy), r = NIGHT ? 5 : 6;
+      if (d <= r) FB[i] = SUN0; else if (d <= r + 1.5) FB[i] = SUN1;
+      else if (d < R && (1 - d / R) * (NIGHT ? 7 : 16) > bay(x, y)) FB[i] = LIGHT[FB[i]];
+    }
+  }
+  for (let k = 0; k < 3; k++) {                                                // thin cloud streaks lit from below
+    const cy = 22 + k * 14, cx = 60 + k * 90 + 18 * cyc(1, k * 2), w = 50 + k * 10;
+    for (let x = ri(cx - w / 2); x < cx + w / 2; x++) {
+      if (x < 0 || x >= W) continue;
+      const e = 1 - Math.abs(x - cx) / (w / 2), rows = e > 0.5 ? 2 : 1;
+      for (let r = 0; r < rows; r++) { const i = (cy + r) * W + x; if (SURF[i] === S_SKY && (e * 16 > bay(x, cy + r) + 3)) FB[i] = r === rows - 1 ? (NIGHT ? SUN1 : MIDDAY ? G0 : SUN1) : (MIDDAY ? G0 : NIGHT ? HAZ2 : SKY2); }
+    }
+  }
+  for (let x = ri(VPX + 30); x < W; x++) {                                     // far headland on the right of the horizon
+    const top = ri(HZ - Math.min(15, (x - VPX - 30) * 0.2) - 1.5 * Math.sin(x * 0.2));
+    for (let y = top; y < HZ; y++) { const i = y * W + x; if (SURF[i] === S_SKY) FB[i] = y === top ? (NIGHT ? HAZ1 : HAZ0) : HAZ1; }
+  }
+  for (let x = 0; x < ri(VPX - 60); x++) { const top = ri(HZ - 4 - 2 * Math.sin(x * 0.09)); for (let y = top; y < HZ; y++) { const i = y * W + x; if (SURF[i] === S_SKY) FB[i] = HAZ0; } }
+  if (O_WEATHER === 'fog') for (let y = 0; y < HZ; y++) for (let x = 0; x < W; x++) { const i = y * W + x; if (SURF[i] !== S_SKY) continue; FB[i] = FOGL[FB[i]]; if (y > HZ - 30 || 8 > bay(x, y)) FB[i] = FOGL[FB[i]]; }   // fog swallows the sky and headland
+  const lx = ri(VPX + 116), ly = HZ - 11;                                      // lighthouse
+  for (let y = ly - 10; y <= ly; y++) hline(lx - 1, lx, y, ((y - ly) & 2) ? CLR : G0);
+  rect(lx - 1, ly - 13, 2, 2, LAMPS_ON || O_WEATHER === 'fog' ? L0 : HAZ1); px(lx - 1, ly - 14, K1); px(lx, ly - 14, K1);
+  const bs = NIGHT ? 1 : O_WEATHER === 'fog' ? 1.3 : OVERCAST ? 0.5 : O_TIME === 'golden' ? 0.3 : 0;
+  if (bs > 0) {
+    const a = TAU * gT * 8 / LOOP, c = Math.cos(a), len = 190 * Math.abs(c), dir = c > 0 ? 1 : -1;
+    if (Math.sin(a) > 0.93) glow(lx, ly - 12, 12, 8, LIGHT, 18 * bs);
+    for (let d = 2; d < len; d++) {
+      const x = lx + dir * d, hw = 1 + d * 0.06, lvl = bs * 11 * (1 - d / len);
+      for (let y = Math.floor(ly - 12 - hw); y <= ly - 12 + hw; y++) {
+        if (x < 0 || x >= W || y < 0 || y >= H) continue;
+        const i = y * W + x, s = SURF[i]; if (s !== S_SKY && s !== S_WATER) continue;
+        if (lvl * (1 - Math.abs(y - ly + 12) / (hw + 1)) > bay(x, y)) FB[i] = LIGHT[FB[i]];
+      }
+    }
+  }
+}
+function drawWaterFx() {
+  const glit = O_TIME === 'golden' && !OVERCAST && O_WEATHER !== 'fog', moon = NIGHT && O_WEATHER === 'clear';
+  for (let y = HZ; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (SURF[i] !== S_WATER) continue;
+    const z = ZB[i];
+    if ((glit || moon) && Math.abs(x - D_SUNX) < (moon ? 2 : 3) + (y - HZ) * (moon ? 0.3 : 0.9) && hash(x * 13 + y * 71 + (frame >> 3) * 17) < 0.4 * clamp((z - 5) / 22, 0.12, 1)) FB[i] = (y & 1) ? SEA0 : SUN1;   // sparse up close
+    else if (z < 25 && (y & 1) && hash((((x + (frame >> 4)) % 240) >> 2) * 31 + y * 7) < 0.12 * SPK) FB[i] = LIGHT[FB[i]];
+  }
+}
+// moored boats (bob; drawn over water/sky only)
+function boatPix(x, y, c) { if (x < 0 || y < 0 || x >= W || y >= H) return; const s = SURF[y * W + x]; if (s === S_WATER || s === S_SKY) FB[y * W + x] = c; }
+function drawBoatsD() {
+  for (let k = 0; k < 2; k++) {
+    const z0 = k ? 18 : 9, z1 = z0 + 4.8, bob = cyc(4 + k, k) > 0.2 ? 0.08 : 0, hd = -0.55 + bob, X = 4.2;
+    const hullC = k ? CLR : B0;
+    for (let z = z0; z <= z1; z += 0.04) {
+      const t = (z - z0) / (z1 - z0), bow = t > 0.8 ? (t - 0.8) * 3 : 0;
+      const xs = ri(sx3(X + bow, z)), ya = ri(sy3(hd, z)), yb = ri(sy3(WATER_H + 0.1, z));
+      for (let y = ya; y <= yb; y++) boatPix(xs, y, y === ya ? WD0 : y > yb - 1 ? B1 : hullC);
+    }
+    for (let z = z0 + 0.3; z < z1 - 1.2; z += 0.05) { const xa = ri(sx3(X + 0.1, z)), xb = ri(sx3(X + 2.6, z)), y = ri(sy3(hd, z)); for (let x = xa; x <= xb; x++) boatPix(x, y, WD1); }
+    const zc = z0 + 0.8, ya = ri(sy3(hd + 1.0, zc)), yb = ri(sy3(hd, zc));
+    for (let y = ya; y <= yb; y++) for (let x = ri(sx3(X + 0.4, zc)); x <= ri(sx3(X + 1.9, zc)); x++) boatPix(x, y, y === ya ? ST0 : CLC);
+    const mz = z0 + 2.4, mx = ri(sx3(X + 1.2, mz));
+    for (let y = ri(sy3(hd + 4.6, mz)); y <= ri(sy3(hd, mz)); y++) boatPix(mx, y, WD2);
+    if (LAMPS_ON) boatPix(mx, ri(sy3(hd + 4.7, mz)), L0);
+  }
+}
+
+// ---------- timeline: the loop opens and closes on the fisherman gazing at the lighthouse from the quay end ----------
+const QE = 330, CR_R = 232, CR_L = 190, STALL = 134;
+const F = { vis: O_SUBJ >= 1, x: QE, face: 1, walkF: -1, bob: 0, bend: 0, arm: 0, head: 0, carry: false, fish: false, handX: 0, handY: 0 };
+const CAT = { vis: O_SUBJ >= 2, state: 0, jump: 0 };
+const KID = { vis: false, x: 0, walkF: 0, wave: false };
+let crateOnStack = true, crateAtStall = false, lanternLit = O_SUBJ === 0, lanternFlick = 1;
+let fishFly = -1, fishX0 = 0, fishY0 = 0;                                   // pass-object: fish in flight (u 0..1)
+function walkSeg(t, t0, t1, x0, x1) {                                        // eased walk, 0.8 s ramps
+  const d = t1 - t0, r = Math.min(0.45, 0.8 / d), u = clamp((t - t0) / d, 0, 1), v = 1 / (1 - r);
+  const s = u < r ? v * u * u / (2 * r) : u > 1 - r ? 1 - v * (1 - u) * (1 - u) / (2 * r) : v * (u - r / 2);
+  F.x = lerp(x0, x1, s); F.face = x1 > x0 ? 1 : -1;
+  F.walkF = Math.floor(Math.abs(F.x - x0) / 14 * 8) & 7; F.bob = (F.walkF === 2 || F.walkF === 6) ? -1 : 0;
+}
+function bendCurve(t, t0, t1) { return Math.sin(clamp((t - t0) / (t1 - t0), 0, 1) * Math.PI); }
+function updateScene(t) {
+  const tq = Math.floor(t * 12) / 12;                                        // poses on the 12 fps grid
+  F.walkF = -1; F.bob = 0; F.bend = 0; F.arm = 0; F.head = 0; F.fish = false;
+  if (F.vis) {
+    if (t < 6 || t >= 54) { F.x = QE; F.face = 1; F.head = -1; F.arm = 7; }
+    else if (t < 12) walkSeg(t, 6, 12, QE, CR_R);
+    else if (t < 14) { F.x = CR_R; F.face = -1; F.bend = bendCurve(tq, 12, 14); }
+    else if (t < 20.5) walkSeg(t, 14, 20.5, CR_R, STALL);
+    else if (t < 22.5) { F.x = STALL; F.face = -1; F.bend = bendCurve(tq, 20.5, 22.5); }
+    else if (t < 26) { F.x = STALL; F.face = -1; F.arm = tq < 23.6 ? 2 : tq < 25.4 ? 3 : 0; F.head = tq >= 23.6 && tq < 25.4 ? -1 : 0; }
+    else if (t < 27.6) { F.x = STALL; F.face = -1; F.bend = bendCurve(tq, 26, 27.2) * (tq < 27.2 ? 1 : 0); F.fish = tq >= 26.7; F.arm = tq >= 27.2 ? 6 : 0; }
+    else if (t < 29.9) { F.x = STALL; F.face = 1; F.fish = tq < 29.6; F.arm = tq < 27.8 ? 6 : tq < 29.4 ? 4 : 5; }
+    else if (t < 36.4) { F.x = STALL; F.face = 1; F.arm = 0; F.head = tq > 35 && tq < 36.3 ? -1 : 0; }
+    else if (t < 37.6) { F.x = STALL; F.face = -1; F.head = -1; }
+    else if (t < 39.6) { F.x = STALL; F.face = -1; F.bend = bendCurve(tq, 37.6, 39.6); }
+    else if (t < 43.6) walkSeg(t, 39.6, 43.6, STALL, CR_L);
+    else if (t < 45.6) { F.x = CR_L; F.face = 1; F.arm = 1; F.bend = 0.4 * bendCurve(tq, 43.6, 45.6); }
+    else walkSeg(t, 45.6, 54, CR_L, QE);
+    if (F.walkF >= 0) F.walkF = Math.floor(Math.abs(F.x - (t < 12 ? QE : t < 20.5 ? CR_R : t < 43.6 ? STALL : CR_L)) / 14 * 8) & 7;
+    // crate state (moved and returned within the loop)
+    crateOnStack = t < 13 || t >= 44.6;
+    F.carry = (t >= 13 && t < 21.4) || (t >= 38.6 && t < 44.6);
+    crateAtStall = t >= 21.4 && t < 38.6;
+    if (F.carry && F.arm === 0) F.arm = 1;
+    // lantern: lit with the match, blown out by the gust
+    lanternLit = t >= 24.8 && t < 36.2;
+    lanternFlick = t >= 35.2 && t < 36.2 ? (hash(frame >> 1) > 0.45 ? 1 : 0.2) : 0.85 + 0.15 * hash(frame >> 2);
+    // fish toss (pass-object): released at 29.6, lands at the cat (or in the water) at 30.5
+    fishFly = t >= 29.6 && t < 30.5 ? (t - 29.6) / 0.9 : -1;
+  }
+  // the cat
+  CAT.state = 0; CAT.jump = 0;
+  if (CAT.vis) {
+    if (t >= 30.25 && t < 30.75) { CAT.state = 1; CAT.jump = Math.sin((tq - 30.25) / 0.5 * Math.PI) * 7; }
+    else if (t >= 30.75 && t < 40) CAT.state = 2;
+    else if ((t >= 12 && t < 18) || (t >= 40 && t < 46)) CAT.state = 3;
+  }
+  // the passer-by child (subjects = 3) runs right to left and waves at the fisherman
+  KID.vis = O_SUBJ >= 3 && t >= 30 && t < 44.2;
+  if (KID.vis) { KID.x = 500 - 37.9 * (t - 30); KID.walkF = Math.floor((500 - KID.x) / 12 * 8) & 7; KID.wave = Math.abs(KID.x - F.x) < 50; }
+}
+
+
+// ---------- the fisherman (drawn facing right; mirrored for left) ----------
+const SW_ = 48, SH_ = 52, SAX = 20, SAY = 48;
+const FBUF = new Uint8Array(SW_ * SH_), CBUF = new Uint8Array(SW_ * SH_), KBUF = new Uint8Array(SW_ * SH_);
+const LEGO = new Int8Array([3, 2, 0, -2, -3, -2, 0, 2]);
+function thick(x0, y0, x1, y1, c) { line(x0, y0, x1, y1, c); line(x0, y0 + 1, x1, y1 + 1, c); }
+function drawFisherman() {
+  FBUF.fill(CLEAR); target(FBUF, SW_, SH_, SAX, SAY);
+  const b = F.bob, bx = ri(F.bend * 3), by = ri(F.bend * 5), walking = F.walkF >= 0;
+  const fo = walking ? LEGO[F.walkF] : 1, bo = walking ? -LEGO[F.walkF] : -1;
+  // hand position per arm pose (relative to feet)
+  let hx = 1 + (walking ? -ri(LEGO[F.walkF] * 0.6) : 0), hy = -13 + b;
+  if (F.arm === 1) { hx = 6; hy = -16 + b; }
+  else if (F.arm === 2) { hx = 4; hy = -19; }
+  else if (F.arm === 3) { hx = 5; hy = -37; }
+  else if (F.arm === 4) { hx = -4; hy = -27; }
+  else if (F.arm === 5) { hx = 7; hy = -28; }
+  else if (F.arm === 6) { hx = 5; hy = -17; }
+  else if (F.arm === 7) { hx = -3; hy = -15; }
+  if (F.bend > 0.05 && F.arm !== 1) { hx = 3 + bx + 2; hy = ri(lerp(-13, -3, F.bend)); }
+  F.handX = hx; F.handY = hy;
+  // far arm + far leg (shadowed side first)
+  thick(-1 + bx, -22 + b + by, walking ? -hx + 2 : hx - 1, F.arm === 1 ? hy : hy + 1, Y1);
+  line(0, -11 + b, bo, -2, TR1); rect(bo - 1, -1, 3, 2, K1); px(bo + 2, 0, K1);
+  // coat skirt + legs
+  line(0, -11 + b, fo, -2, TR0); rect(fo - 1, -1, 3, 2, K1); px(fo + 2, 0, K1);
+  for (let y = -17; y <= -9; y++) { const k = y + 17, L = -3 - (k >> 2) - (walking && k > 5 ? 1 : 0), R = 3 + (k >> 3); hline(L, R, y + b, Y0); }
+  hline(-4, 4, -9 + b, Y1);
+  // upper body (shifts forward/down when bending)
+  for (let y = -24; y <= -18; y++) hline(-3 + bx, 3 + bx, y + b + by, Y0);
+  vline(1 + bx, -22 + b + by, -18 + b + by, Y1); vline(1, -17 + b, -10 + b, Y1);
+  hline(-3 + bx, 3 + bx, -24 + b + by, Y1); rect(2, -14 + b, 2, 2, Y1);
+  const hyo = F.head < 0 ? -1 : F.head > 0 ? 1 : 0;
+  for (let y = -31; y <= -25; y++) hline(-2 + bx, 3 + bx, y + b + by + hyo, SK0);
+  px(4 + bx, -29 + b + by + hyo, SK1); px(2 + bx, -29 + b + by + (F.head < 0 ? -2 : hyo), K1);
+  for (let y = -27; y <= -25; y++) hline(0 + bx, 3 + bx, y + b + by + hyo, GRY); px(4 + bx, -26 + b + by + hyo, GRY);
+  for (let y = -34; y <= -30; y++) hline(-2 + bx - (y > -32 ? 1 : 0), 3 + bx - (y === -34 ? 1 : 0), y + b + by + hyo, y === -31 ? WD1 : CLR);
+  // carried crate (in front, hands on its sides) / fish in hand
+  if (F.carry && F.arm === 1) { drawCrateAt(2, -11 + b); px(3, -19 + b, SK0); px(17, -17 + b, SK0); }
+  if (F.fish && fishFly < 0) { vline(hx + 1, hy + 1, hy + 5, FS0); px(hx + 2, hy + 5, FS1); px(hx, hy + 5, FS1); }
+  thick(1 + bx, -22 + b + by, hx, hy, Y0); px(hx, hy, SK0); px(hx + 1, hy, SK0);
+}
+// ---------- the cat (drawn facing left, toward the stall) ----------
+function drawCat() {
+  CBUF.fill(CLEAR); target(CBUF, SW_, SH_, SAX, SAY);
+  const j = -ri(CAT.jump), sway = cyc(20, 0) > 0.3 ? 1 : 0;
+  for (let y = -6; y <= -1; y++) hline(-2, 3 - (y < -4 ? 1 : 0), y + j, (y === -4 || y === -2) ? C1 : C0);
+  vline(-3, -5 + j, -2 + j, C0);
+  if (CAT.state === 2) {                                                     // eating: head down over the fish
+    rect(-7, -5, 4, 4, C0); px(-7, -6, C1); px(-4, -6, C1); px(-6, -3, K1);
+    hline(-10, -7, -1, FS0); px(-10, -2, FS1);
+  } else {
+    rect(-6, -10 + j, 4, 4, C0); px(-6, -11 + j, C1); px(-3, -11 + j, C1); px(-5, -8 + j, K1); px(-7, -7 + j, C1);
+    if (CAT.state === 1) { px(-5, -12 + j, C0); px(-4, -12 + j, C0); px(-7, -9 + j, C0); }        // paws up for the catch
+    if (CAT.state === 3 && ((frame >> 4) & 1)) { px(-5, -6 + j, C0); px(-6, -7 + j, C0); }         // grooming paw
+  }
+  px(4, -1 + j, C0); px(5 + sway, -2 + j, C0); px(5 + sway, -3 + j, C1); px(4 + sway, -4 + j, C0);   // tail
+}
+// ---------- the child (drawn facing right, mirrored: runs left) ----------
+function drawKid() {
+  KBUF.fill(CLEAR); target(KBUF, SW_, SH_, SAX, SAY);
+  const f = KID.walkF, lo = LEGO[f], hop = (f === 2 || f === 6) ? -2 : 0;
+  line(0, -6 + hop, -lo, -1, TR1); px(-lo, 0, K1); px(-lo + 1, 0, K1);
+  line(0, -6 + hop, lo, -1, TR0); px(lo, 0, K1); px(lo + 1, 0, K1);
+  for (let y = -13; y <= -6; y++) hline(-3, 2 + (y > -9 ? 1 : 0), y + hop, KC);
+  hline(-3, 3, -6 + hop, KC1);
+  for (let y = -19; y <= -14; y++) hline(-3, 2, y + hop, KC);
+  rect(0, -18 + hop, 3, 4, SK0); px(2, -17 + hop, K1);
+  if (KID.wave) { line(1, -12 + hop, 3, -21 + hop, KC); px(3, -22 + hop, SK0); }
+  else { line(0, -12 + hop, lo + 1, -8 + hop, KC); px(lo + 1, -7 + hop, SK0); }
+}
+
+// ---------- shared figures: crate + front/back fisherman at fixed size tiers (never scaled) ----------
+function drawCrateAt(x, base) {                                               // 17 x 9 crate (used by the side-view carry pose)
+  rect(x, base - 8, 17, 9, WD1);
+  for (let yy = base - 7; yy <= base; yy += 3) hline(x, x + 16, yy, WD0);
+  vline(x, base - 8, base, WD2); vline(x + 16, base - 8, base, WD2); hline(x, x + 16, base - 8, WD2);
+  line(x + 1, base - 1, x + 15, base - 7, WD2);
+}
+// ---------- front / back fisherman at fixed size tiers (never scaled) ----------
+const D_TIERS = new Uint8Array([7, 9, 12, 16, 21, 27, 34]);
+function tierFor(hpx) { let t = D_TIERS[0]; for (let i = 0; i < D_TIERS.length; i++) if (D_TIERS[i] <= hpx * 1.1) t = D_TIERS[i]; return t; }
+function drawFisherFB(T, f, back, carry, bend, armUp) {
+  FBUF.fill(CLEAR); target(FBUF, SW_, SH_, SAX, SAY);
+  const walk = f >= 0, b = walk && (f === 2 || f === 6) ? -1 : 0, dn = ri(bend * 0.16 * T);
+  const top = -T + 1 + b + dn, bea = Math.max(2, ri(0.13 * T)), hd = Math.max(2, ri(0.12 * T));
+  const hw = Math.max(1, ri(0.09 * T)), sw = Math.max(2, ri(0.2 * T)), hem = Math.max(2, ri(0.23 * T));
+  const cTop = top + bea + hd, cBot = -Math.max(2, ri(0.2 * T)), lx = Math.max(1, ri(0.08 * T));
+  // legs + boots (the stepping foot sits one pixel higher)
+  for (let s = -1; s <= 1; s += 2) {
+    const lift = walk && ((f < 4) === (s < 0)) && (f & 3) !== 0 ? -1 : 0;
+    vline(s * lx, cBot, -1 + lift, TR0); hline(s * lx - (T > 14 ? 1 : 0), s * lx + (T > 14 ? 1 : 0), lift, K1);
+  }
+  // oilskin coat
+  for (let y = cTop; y <= cBot; y++) {
+    const t = (y - cTop) / Math.max(1, cBot - cTop), half = ri(lerp(sw, hem, t));
+    hline(-half, half, y, Y0);
+    if (!back && T >= 16) px(0, y, Y1);
+  }
+  hline(-hem, hem, cBot, Y1);
+  if (!back && T >= 21) { rect(-sw + 1, cTop + ri(0.45 * (cBot - cTop)), 2, 2, Y1); rect(sw - 2, cTop + ri(0.45 * (cBot - cTop)), 2, 2, Y1); }
+  // arms (reach down when bending)
+  const ay = cTop + ri((cBot - cTop) * (bend > 0.2 ? 0.95 : 0.6));
+  vline(-sw - 1, cTop + 1, ay, Y0); px(-sw - 1, ay + 1, SK0);
+  if (armUp) { const uy = top - ri(0.08 * T); line(sw, cTop + 1, sw + 2, uy, Y0); line(sw + 1, cTop + 1, sw + 3, uy, Y0); px(sw + 2, uy - 1, SK0); px(sw + 3, uy - 1, SK0); }
+  else { vline(sw + 1, cTop + 1, ay, Y0); px(sw + 1, ay + 1, SK0); }
+  // head: face + beard (front) or the back of the head (back); red beanie with its fold
+  for (let y = top + bea; y < cTop; y++) hline(-hw, hw, y, back ? SK1 : SK0);
+  if (!back) { for (let y = cTop - ri(hd * 0.5); y < cTop + (T > 14 ? 1 : 0); y++) hline(-hw, hw, y, GRY); if (T >= 16) { px(-1, top + bea + 1, K1); px(1, top + bea + 1, K1); } }
+  else if (T >= 12) hline(-hw, hw, cTop - 1, GRY);
+  for (let y = top; y < top + bea; y++) hline(-hw - (y > top ? 1 : 0), hw + (y > top ? 1 : 0), y, y === top + bea - 1 ? WD1 : CLR);
+  // carried crate: in front (front view) or poking out at the sides (back view)
+  if (carry) {
+    const cw = Math.max(3, ri(0.3 * T)), cy0 = cTop + ri(0.25 * (cBot - cTop)), ch = Math.max(2, ri(0.22 * T));
+    if (!back) { rect(-cw, cy0, cw * 2 + 1, ch, WD1); hline(-cw, cw, cy0, WD0); if (ch > 3) hline(-cw, cw, cy0 + (ch >> 1), WD0); }
+    else { vline(-sw - 2, cy0, cy0 + ch - 1, WD1); vline(sw + 2, cy0, cy0 + ch - 1, WD1); }
+  }
+}
+
+
+// ---------- story position (side px along the quay) -> depth: stall near the camera, quay end far away ----------
+function uToZ(u) {
+  if (u <= 190) return lerp(5.4, 9.8, (u - 134) / 56);
+  if (u <= 232) return lerp(9.8, 11.4, (u - 190) / 42);
+  return lerp(11.4, 27.5, (u - 232) / 98);
+}
+function uToX(u) {
+  const ds = Math.abs(u - 134), dc = Math.min(Math.abs(u - 190), Math.abs(u - 232)), de = Math.abs(u - 330);
+  if (ds < 22) return lerp(-2.9, -1.4, ds / 22);
+  if (dc < 16) return lerp(-3.05, -1.4, dc / 16);
+  if (de < 30) return lerp(-0.6, -1.4, de / 30);
+  return -1.4;
+}
+// ---------- depth-aware subject blit: rims (backlight / lamps / moon), flat fog, shadow toward the camera ----------
+const EMIS = new Uint8Array(256); EMIS[L0] = EMIS[L1] = EMIS[SUN0] = 1;
+function rimsFor(z, X) {                                                      // returns via globals: rimL, rimR, rimT
+  RL = CLEAR; RR = CLEAR; RT = CLEAR;
+  if (!fxOn('rim') || O_WEATHER === 'fog') return;
+  if (O_TIME === 'golden' && !OVERCAST) { RL = RIM; RR = RIM; RT = RIM; }    // the sun sits ahead, down the quay: full backlight
+  else if (MIDDAY) RT = RIM;
+  else if (NIGHT) RL = RIM;
+  if (LAMPS_ON) for (let l = 0; l < 3; l++) if (Math.abs(z - LZ3[l]) < 3.2) RR = L0;          // lamps stand on the right (edge side)
+  if (lanternLit && z < 7.5 && X < -2) RL = L0;
+}
+let RL = CLEAR, RR = CLEAR, RT = CLEAR, stampD = 1;
+const STAMPD = new Uint16Array(W * H);
+function blitDepth(buf, sx, feetY, z, flip, shadowLen) {
+  const ox = flip ? sx - (SW_ - 1 - SAX) : sx - SAX, oy = feetY - SAY;
+  sBuf = buf; sW = SW_; sH = SH_; sFlip = flip;
+  stampD = (stampD % 65535) + 1;
+  if (shadowLen > 0 && fxOn('shadows')) for (let y = 0; y < SH_; y++) for (let x = 0; x < SW_; x++) {   // squashed silhouette toward the camera
+    if (!sop(x, y)) continue;
+    const Y = feetY + ri((SAY - y) * shadowLen);
+    for (let k = -1; k <= 1; k++) {                                          // widened so thin legs don't leave a comb
+      const X = ox + x + k; if (X < 0 || X >= W || Y < IMG_TOP || Y >= IMG_BOT || SURF[Y * W + X] !== S_QUAY) continue;
+      if (STAMPD[Y * W + X] !== stampD) { STAMPD[Y * W + X] = stampD; FB[Y * W + X] = SHADE[FB[Y * W + X]]; }
+    }
+  }
+  glow(sx + 0.5, feetY + 0.5, Math.max(2, 0.4 * FOC / z), Math.max(1, 0.1 * FOC / z), SHADE, 13);
+  const shadeOn = !(MIDDAY || OVERCAST) && fxOn('rim');
+  for (let y = 0; y < SH_; y++) for (let x = 0; x < SW_; x++) {
+    const v = buf[y * SW_ + (flip ? SW_ - 1 - x : x)]; if (v === CLEAR) continue;
+    const X = ox + x, Y = oy + y;
+    let c = v;
+    if (!EMIS[v] && !NORIM[v]) {
+      const eL = !sop(x - 1, y) && sop(x + 1, y), eR = !sop(x + 1, y) && sop(x - 1, y), eT = !sop(x, y - 1) && sop(x, y + 1);
+      if (eL && RL !== CLEAR) c = RL; else if (eR && RR !== CLEAR) c = RR; else if (eT && RT !== CLEAR) c = RT;
+      else if (shadeOn) { const near = (RL !== CLEAR && !sop(x - 2, y)) || (RR !== CLEAR && !sop(x + 2, y)); if (!near) c = SHADE[v]; }
+    }
+    if (X >= 0 && X < W && Y >= IMG_TOP && Y < IMG_BOT) FB[Y * W + X] = fogPix(c, z, X, Y);
+  }
+  for (let y = 0; y < SH_; y++) for (let x = 0; x < SW_; x++) {               // selective outline on the shadow side
+    if (sop(x, y) || !sop(x + 1, y)) continue;
+    const X = ox + x, Y = oy + y; if (X >= 0 && X < W && Y >= IMG_TOP && Y < IMG_BOT && z < 16) FB[Y * W + X] = fogPix(K1, z, X, Y);
+  }
+}
+// cat on the lobster pot (side sprite) + fisherman (side sprite at the stall, front/back tiers elsewhere)
+const CAT_X3 = 0.2, CAT_Z3 = 5.6, CAT_H3 = 0.55;
+let FSX = 0, FFY = 0, FZ = 5, FSIDE = false;
+function subjectsD() {
+  const z = uToZ(F.x), X = uToX(F.x);
+  FZ = z; FSX = ri(sx3(X, z)); FFY = ri(sy3(0, z));
+  FSIDE = F.walkF < 0 && Math.abs(F.x - STALL) < 1;
+  const shadowLen = O_TIME === 'golden' && !OVERCAST ? 0.45 : MIDDAY ? 0.12 : NIGHT ? 0.2 : 0;
+  const catFirst = CAT_Z3 > z;                                               // draw the farther one first
+  for (let pass = 0; pass < 2; pass++) {
+    const doCat = (pass === 0) === catFirst;
+    if (doCat) {
+      if (!CAT.vis) continue;
+      drawCat(); target(FB, W, H); rimsFor(CAT_Z3, CAT_X3);
+      blitDepth(CBUF, ri(sx3(CAT_X3, CAT_Z3)) + 1, ri(sy3(CAT_H3, CAT_Z3)), CAT_Z3, false, 0);
+    } else {
+      if (!F.vis) continue;
+      if (FSIDE) drawFisherman(); else drawFisherFB(tierFor(1.85 * FOC / z), F.walkF, F.face > 0, F.carry, F.bend, false);
+      target(FB, W, H); rimsFor(z, X);
+      blitDepth(FBUF, FSX, FFY, z, FSIDE ? F.face < 0 : false, shadowLen);
+    }
+  }
+}
+
+// ---------- practical lights in 3D: 3 lamp posts + the stall lantern ----------
+const DL_N = 4, DLX = new Float32Array([1.75, 1.75, 1.75, -3.3]), DLH = new Float32Array([3.3, 3.3, 3.3, 2.1]);
+const DLZ = new Float32Array([8, 15, 23, 6.3]), DLR = new Float32Array(DL_N);
+const DBX0 = new Int16Array(DL_N), DBX1 = new Int16Array(DL_N), DBY0 = new Int16Array(DL_N), DBY1 = new Int16Array(DL_N);
+for (let i = 0; i < DL_N; i++) {
+  DLR[i] = (i === 3 ? 3.4 : 4.6) * PRACT;
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (let k = 0; k < 8; k++) {
+    const X = DLX[i] + (k & 1 ? DLR[i] : -DLR[i]), h = Math.max(0, DLH[i] + (k & 2 ? DLR[i] : -DLR[i])), z = Math.max(2, DLZ[i] + (k & 4 ? DLR[i] : -DLR[i]));
+    x0 = Math.min(x0, sx3(X, z)); x1 = Math.max(x1, sx3(X, z)); y0 = Math.min(y0, sy3(h, z)); y1 = Math.max(y1, sy3(h, z));
+  }
+  DBX0[i] = clamp(Math.floor(x0), 0, W - 1); DBX1[i] = clamp(Math.ceil(x1), 0, W - 1); DBY0[i] = clamp(Math.floor(y0), 0, H - 1); DBY1[i] = clamp(Math.ceil(y1), 0, H - 1);
+}
+function lightOn(i) { return i === 3 ? lanternLit : LAMPS_ON; }
+function drawLightsD() {
+  const nk = NIGHT ? 1.25 : 1;
+  for (let i = 0; i < DL_N; i++) {
+    if (!lightOn(i)) continue;
+    const fl = i === 3 ? lanternFlick : 1, R = DLR[i], R2 = R * R, maxL = 20 * PRACT * nk * fl;
+    for (let y = DBY0[i]; y <= DBY1[i]; y++) for (let x = DBX0[i]; x <= DBX1[i]; x++) {       // pool: coloured inside, brightening at the edge
+      const idx = y * W + x, s = SURF[idx]; if (s !== S_QUAY && s !== S_WALL) continue;
+      const z = ZB[idx]; let X, h;
+      if (s === S_QUAY) { X = (x + 0.5 - VPX) * z / FOC; h = 0; } else { X = QX0; h = CAMH - (y + 0.5 - HZ) * z / FOC; }
+      const dX = X - DLX[i], dH = h - DLH[i], dZ = z - DLZ[i], d2 = dX * dX + dH * dH + dZ * dZ; if (d2 >= R2) continue;
+      const l = (1 - Math.sqrt(d2) / R) * maxL;
+      if (l > bay(x, y)) FB[idx] = (l > 7 ? LAMPC : LIGHT_L)[FB[idx]];
+      if (l - 16 > bay(x + 2, y + 1)) FB[idx] = LAMPC[FB[idx]];
+    }
+    const hx = sx3(DLX[i], DLZ[i]), hy = sy3(DLH[i], DLZ[i]), gy = sy3(0, DLZ[i]), s = FOC / DLZ[i];
+    const hw = 1.1 * s * PRACT, lvl = 8 * CONE_K * nk * fl;                  // cone in the air (needs rain / fog / snow to show)
+    for (let y = ri(hy + 1); y <= gy; y++) {
+      const f = (y - hy) / Math.max(1, gy - hy), w = 1 + f * hw;
+      for (let x = Math.floor(hx - w); x <= hx + w; x++) {
+        if (x < 0 || x >= W || y < IMG_TOP || y >= IMG_BOT) continue;
+        const c = (1 - Math.abs(x - hx) / w) * lvl * (1 - f * 0.5);
+        if (c > bay(x, y + (frame >> 3))) FB[y * W + x] = (c > lvl * 0.45 ? LAMPC : LIGHT_L)[FB[y * W + x]];
+      }
+    }
+    glow(hx, hy, 0.9 * s * PRACT + 2, 0.8 * s * PRACT + 2, LAMPC, 20 * fl);  // halo in the lamp's colour
+  }
+}
+function drawPropsD() {
+  if (crateOnStack || !F.vis) box3(-4.5, -3.7, 0.5, 1.0, 10.2, 11.0, WD0, WD1, WD1);
+  if (crateAtStall && F.vis) box3(-3.6, -3.0, 0, 0.5, 5.7, 6.2, WD0, WD1, WD1);
+  for (let i = 0; i < DL_N; i++) {                                           // lamp heads / lantern body
+    const z = DLZ[i], hx = ri(sx3(DLX[i], z)), hy = ri(sy3(DLH[i], z)), r = Math.max(1, ri(0.16 * FOC / z));
+    rect(hx - r - 1, hy - r - 1, 2 * r + 3, 2 * r + 3, IRON);
+    rect(hx - r, hy - r, 2 * r + 1, 2 * r + 1, lightOn(i) ? (i === 3 && lanternFlick < 0.5 ? L1 : L0) : ST2);
+    if (lightOn(i)) px(hx, hy, SUN0);
+    if (i === 3) vline(hx, ri(sy3(2.3, z)), hy - r - 2, IRON);
+  }
+}
+// wet reflections: lamp heads mirrored on the flagstones (ripple jitter only up close)
+const RB = new Uint8Array(W * H);
+function drawReflectionsD() {
+  if (O_WEATHER !== 'rain' || !fxOn('reflect')) return;
+  RB.fill(CLEAR); target(RB, W, H);
+  for (let i = 0; i < DL_N; i++) if (lightOn(i)) { const z = DLZ[i]; q3(DLX[i] - 0.15, -DLH[i] - 0.2, z, DLX[i] + 0.15, -DLH[i] - 0.2, z, DLX[i] + 0.15, -DLH[i] + 0.2, z, DLX[i] - 0.15, -DLH[i] + 0.2, z, L0); }
+  target(FB, W, H);
+  const wob = frame >> 3;
+  for (let y = HZ; y < H; y++) {
+    const zr = CAMH * FOC / (y + 0.5 - HZ), jx = zr < 14 ? ((hash(y * 73 + wob) * 3) | 0) - 1 : 0;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x; if (SURF[i] !== S_QUAY) continue;
+      const sx = x + jx; if (sx < 0 || sx >= W) continue;
+      if (RB[y * W + sx] !== CLEAR && (PUD[i] ? 14 : 7) > bay(x, y)) FB[i] = PUD[i] ? L0 : L1;
+    }
+  }
+}
+
+// ---------- particles: rain / snow (screen slice), steam, sparks, splashes, ripples ----------
+const PN = 400, AMB = O_WEATHER === 'rain' ? 180 : O_WEATHER === 'snow' ? 150 : 0;
+const P_SPARK = 1, P_STEAM = 2, P_SPLASH = 3;
+const pX = new Float32Array(PN), pY = new Float32Array(PN), pVX = new Float32Array(PN), pVY = new Float32Array(PN);
+const pAge = new Float32Array(PN), pLife = new Float32Array(PN), pK = new Float32Array(PN), pType = new Uint8Array(PN);
+let pNext = AMB, prevT = 0;
+for (let i = 0; i < AMB; i++) { pX[i] = rnd() * W; pY[i] = rnd() * H; pK[i] = 0.3 + rnd() * 0.7; pVY[i] = O_WEATHER === 'rain' ? 140 + 200 * pK[i] : 8 + 14 * pK[i]; pVX[i] = rnd() * TAU; }
+function spawn(type, x, y, vx, vy, life) {
+  for (let n = 0; n < PN - AMB; n++) {
+    const i = AMB + ((pNext - AMB + n) % (PN - AMB)); if (pType[i] !== 0) continue;
+    pType[i] = type; pX[i] = x; pY[i] = y; pVX[i] = vx; pVY[i] = vy; pAge[i] = 0; pLife[i] = life;
+    pNext = i + 1 >= PN ? AMB : i + 1; return;
+  }
+}
+const STOVE_X = sx3(-4.22, 3.67), STOVE_Y = sy3(1.2, 3.67);
+function stepParticlesD() {
+  const t = gT;
+  if (F.vis && FSIDE && prevT < 23.2 && t >= 23.2) {
+    const hx = FSX + (F.face < 0 ? -1 : 1) * (F.handX + 2), hy = FFY + F.handY - 1;
+    for (let k = 0; k < 11; k++) spawn(P_SPARK, hx, hy, (rnd() - 0.5) * 40, -10 - rnd() * 30, 0.25 + rnd() * 0.35);
+  }
+  if ((prevT < 3.3 && t >= 3.3) || (prevT < 57.3 && t >= 57.3)) { const x = sx3(5.5, 13), y = sy3(WATER_H, 13); for (let k = 0; k < 8; k++) spawn(P_SPLASH, x + (rnd() - 0.5) * 3, y, (rnd() - 0.5) * 20, -15 - rnd() * 18, 0.5); }
+  if (O_SUBJ === 1 && prevT < 30.5 && t >= 30.5) { const x = sx3(3.4, 6.4), y = sy3(WATER_H, 6.4); for (let k = 0; k < 8; k++) spawn(P_SPLASH, x, y, (rnd() - 0.5) * 26, -20 - rnd() * 20, 0.5); }
+  if (frame % 18 === 0) spawn(P_STEAM, STOVE_X + (rnd() - 0.5) * 4, STOVE_Y, (rnd() - 0.3) * 5 + (t > 34 && t < 37 ? 10 : 0), -9 - rnd() * 4, 2.6);
+  if (O_WEATHER === 'rain') for (let a = 0; a < 3; a++) {                   // splashes only up close (distant ones read as noise)
+    const x = (rnd() * W) | 0, y = HZ + 10 + ((rnd() * (H - HZ - 10)) | 0), i = y * W + x;
+    if ((SURF[i] === S_QUAY || SURF[i] === S_WATER) && ZB[i] < 14) spawn(P_SPLASH, x, y, 0, -8, 0.1);
+  }
+  prevT = t;
+  for (let i = 0; i < AMB; i++) {
+    if (O_WEATHER === 'rain') { pY[i] += pVY[i] * STEP; pX[i] += pVY[i] * 0.12 * STEP; if (pY[i] > H + 4) { pY[i] -= H + 10; pX[i] = rnd() * (W + 40) - 20; } }
+    else { pY[i] += pVY[i] * STEP; pX[i] += Math.sin(gT * 1.3 + pVX[i]) * 6 * pK[i] * STEP; if (pY[i] > H + 2) { pY[i] -= H + 4; pX[i] = rnd() * W; } }
+  }
+  for (let i = AMB; i < PN; i++) {
+    const ty = pType[i]; if (ty === 0) continue;
+    pAge[i] += STEP; if (ty !== P_STEAM) pVY[i] += 140 * STEP;
+    pX[i] += pVX[i] * STEP; pY[i] += pVY[i] * STEP;
+    if (pAge[i] >= pLife[i]) pType[i] = 0;
+  }
+}
+function drawParticlesD() {
+  for (let i = AMB; i < PN; i++) {
+    const ty = pType[i]; if (ty === 0) continue;
+    const x = ri(pX[i]), y = ri(pY[i]), a = pAge[i] / pLife[i];
+    if (ty === P_SPARK) px(x, y, a < 0.4 ? L0 : a < 0.75 ? L1 : RIM);
+    else if (ty === P_SPLASH) px(x, y, a < 0.5 ? G0 : SEA0);
+    else { const r = 2 + pAge[i] * 2.4; glow(x, y, r, r * 0.8, LIGHT, 10 * (1 - a)); }
+  }
+  for (let i = 0; i < AMB; i++) {
+    const x = ri(pX[i]), y = ri(pY[i]), k = pK[i];
+    if (O_WEATHER === 'rain') { if (k < 0.45 && (i & 1)) continue; const L = 2 + ri(4 * k); for (let j = 0; j < L; j++) px(ri(pX[i] - 0.12 * j), y - j, j ? SNOW : (k > 0.6 ? G0 : SNOW)); }
+    else { px(x, y, G0); if (k > 0.75) { px(x + 1, y, G0); px(x, y + 1, SNOW); } }
+  }
+}
+function drawGullsD() {
+  for (let k = 0; k < 3; k++) {
+    const x = ri(100 + k * 70 + 40 * cyc(1 + k, k)), y = ri(30 + k * 8 + 6 * cyc(2 + k, k * 1.3)), fl = ((frame >> 3) + k * 3) % 6 < 2 ? 1 : 0;
+    if (SURF[y * W + x] !== S_SKY) continue;
+    px(x, y, G0); px(x - 1, y - fl, G0); px(x + 1, y - fl, G0); px(x - 2, y - fl * 2, ST1); px(x + 2, y - fl * 2, ST1);
+  }
+}
+function drawFogBanksD() {
+  if (O_WEATHER !== 'fog') return;
+  for (let y = HZ - 6; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, band = 0.5 + 0.5 * Math.sin(x * 0.03 + y * 0.25 + TAU * gT * 2 / LOOP), near = clamp((y - HZ) / (H - HZ), 0, 1);
+    const l = band * (6 + 8 * (1 - near));                                    // thicker toward the horizon
+    if (l > bay(x, y)) FB[i] = FOGL[FB[i]];
+    if (l - 9 > bay(x + 2, y + 1)) FB[i] = FOGL[FB[i]];
+  }
+}
+// near-black foreground: bunting overhead, a bollard and rope coil close to the camera
+const FGB = new Uint8Array(W * H);
+function bakeFgD() {
+  for (let x = 0; x < W; x++) {
+    const y = ri(IMG_TOP + 2 + 8 * Math.sin(Math.PI * ((x % 160) / 160)));
+    FGB[y * W + x] = 1;
+    if (x % 12 === 0) for (let r = 1; r <= 5; r++) for (let c = -2 + (r >> 1); c <= 2 - (r >> 1); c++) { const xx = x + c, yy = y + r; if (xx >= 0 && xx < W) FGB[yy * W + xx] = 1; }
+  }
+  for (let y = IMG_BOT - 16; y < IMG_BOT; y++) for (let x = W - 40; x < W - 24; x++) FGB[y * W + x] = 1;
+  for (let y = IMG_BOT - 8; y < IMG_BOT; y++) for (let x = W - 70; x < W - 44; x++) { const u = (x - (W - 57)) / 13, v = (y - IMG_BOT) / 8; if (u * u + v * v < 1) FGB[y * W + x] = 1; }
+}
+
+// ---------- simulation + composition ----------
+function bake() { bakeDepth(); bakeFgD(); buildVignette(fxOn('vignette') ? 1 : 0); }
+function update() { updateScene(gT); stepParticlesD(); }
+const P16 = new Uint8Array(256);
+{
+  const SUB = [K0, K1, SKY0, SKY2, SUN0, HAZ1, SEA1, SEA3, ST0, ST1, WD0, WD2, CLR, Y0, SK0, G0];
+  const rgb = (i) => { const v = parseInt(PAL_HEX[i].slice(1), 16); return [v >> 16, (v >> 8) & 255, v & 255]; };
+  for (let i = 0; i < 256; i++) P16[i] = i;
+  for (let i = 0; i < NP; i++) { const a = rgb(i); let best = SUB[0], bd = 1e9; for (const s of SUB) { const b = rgb(s), d = (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2; if (d < bd) { bd = d; best = s; } } P16[i] = best; }
+}
+function render() {
+  FB.set(BG); target(FB, W, H);
+  drawSkyD(); drawWaterFx(); drawBoatsD(); drawGullsD();
+  drawPropsD();
+  drawReflectionsD();
+  drawLightsD();
+  subjectsD();
+  if (fishFly >= 0 && F.vis) {                                                 // the fish arcs from his hand to the cat (or the water)
+    const x0 = FSX + F.handX, y0 = FFY - 28, x1 = O_SUBJ >= 2 ? ri(sx3(CAT_X3, CAT_Z3)) + 4 : ri(sx3(3.4, 6.4)), y1 = O_SUBJ >= 2 ? ri(sy3(CAT_H3, CAT_Z3)) - 9 : ri(sy3(WATER_H, 6.4));
+    const x = ri(lerp(x0, x1, fishFly)), y = ri(lerp(y0, y1, fishFly) - 18 * 4 * fishFly * (1 - fishFly)), tl = ((frame >> 2) & 1) ? 1 : -1;
+    rect(x - 3, y - 2, 7, 4, K1); hline(x - 2, x + 2, y, FS0); hline(x - 1, x + 1, y - 1, FS0); px(x + 3 * tl, y, FS1);
+  }
+  drawParticlesD();
+  drawFogBanksD();
+  if (fxOn('fg')) { const sw = cyc(16, 0) > 0.4 ? 1 : 0; for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) { const xs = x - (y < IMG_TOP + 16 ? sw : 0); if (xs >= 0 && FGB[y * W + xs]) FB[y * W + x] = K1; } }
+  applyVignette(SHADE);
+  frameBars(K0);
+  if (O_PAL === 16) for (let i = 0; i < W * H; i++) FB[i] = P16[FB[i]];
+}
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

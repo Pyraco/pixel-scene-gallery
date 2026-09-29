@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kelp Wreck</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+
+/* ==========================================================================
+   TEST 4 - UNDERWATER (side view): "Kelp Wreck"
+   Resolved options (non-defaults marked *):
+     OUTPUT_MODE loop · LOOP_SECONDS 64* · RESOLUTION 320x180 · FRAME letterbox-2.0* · WORLD_W 2* · WORLD_H 1
+     PROJECTION side · TRAVEL left-to-right · ENVIRONMENT underwater* · ERA contemporary
+     SETTING a kelp reef beside an old wooden wreck lying on the sand, 12 m down*
+     TIME midday* (sun straight above the surface) · WEATHER clear · ATMOSPHERE heavy* (blue-green) · SKY none* (surface band)
+     LIGHT_STYLE top-lit* · KEY sun through the surface (centre-high, not visible)* · SHAFTS strong*
+     PRACTICALS diver's torch (warm), 2 jellyfish (magenta)* · SHADOWS contact-only* · RIM auto (cool, top edges)
+     MOOD quiet, curious, weightless* · GRADE cool-mono with a warm practical* · PALETTE 48*
+     SUBJECT_COUNT 2* · S1 scuba diver, yellow tank, torch in the forward hand, swim gait*
+     S2 sea turtle, creature, passer-by, swim gait*
+     BEATS swim in -> stop at the breach -> sweep the torch inside (fish dart out) -> open the chest -> hold
+           -> ascend out of frame right; the camera drifts back as the turtle crosses*
+     LOOP_CLOSE exit-reenter* (the chest lid resets while it is off screen)
+     EFFECT_1 bubbles (rise from the regulator, the chest and a crack in the hull)* · AMBIENT marine snow, fish, jellyfish*
+     STATE_CHANGES chest lid* · SWAY strong* · FOREGROUND both (kelp + rock) · VIGNETTE medium*
+     SHOTS establishing -> follow -> hold on the breach -> follow the ascent -> return drift*
+   ========================================================================== */
+const TITLE = 'Kelp Wreck';
+const W = 320, H = 180, IMG_TOP = 10, IMG_BOT = 170;            // letterbox 2.0 -> 160 px image
+const LOOP_FRAMES = 3840;                                       // 64 s
+const SEED = 21, OUTPUT_MODE = 'loop', STILL_T = 29.4, DEBUG_KEYS = true, EXPORT_SCALES = [1, 4];
+const WW = 640;
+
+const PAL_HEX = [
+  '#050c14', '#0b1a26',                                         // 0-1   near-blacks
+  '#a6ecdc', '#62c4bc', '#3c9ea8', '#2b7f97', '#216283', '#194a6e', // 2-7 water: surface -> deep
+  '#effff8',                                                    // 8     highlight (caustic peaks, glints, silver fish)
+  '#2f7288', '#255c78',                                         // 9-10  far reef (haze)
+  '#1e4d68', '#173f5a',                                         // 11-12 mid rocks + kelp silhouettes
+  '#8ab85e', '#5a9054', '#356a50',                              // 13-15 kelp
+  '#e0d6a0', '#b0b18c', '#7f9084', '#566e72',                   // 16-19 sand: lit -> shade
+  '#93a6a6', '#687e8e', '#475e74',                              // 20-22 rock
+  '#a08058', '#735c4a', '#4c4148', '#2c2c3a',                   // 23-26 wreck timber -> dark interior
+  '#f08c78', '#bb5c70',                                         // 27-28 coral / orange fish
+  '#ffe9a8', '#dcaa48', '#8f6a36',                              // 29-31 gold + brass
+  '#fffbe0', '#ffd670',                                         // 32-33 torch core + halo (emissive)
+  '#e6d49c', '#b39a6a', '#756c5c', '#5c9c8a',                   // 34-37 torch-lit bright/mid/dark, beam in the water
+  '#2e3846', '#1c232e', '#f2c230', '#a47e22', '#c4f2f4',        // 38-42 diver: suit, suit shade, yellow, yellow shade, mask glass
+  '#a2ac6c', '#6c7e4e', '#46563e',                              // 43-45 turtle shell + skin
+  '#f07ad8', '#6a4a96'                                          // 46-47 jellyfish glow, jelly halo in the water
+];
+const K0 = 0, K1 = 1, W0 = 2, W1 = 3, W2 = 4, W3 = 5, W4 = 6, W5 = 7, HI = 8, FA0 = 9, FA1 = 10, MD0 = 11, MD1 = 12,
+      KP0 = 13, KP1 = 14, KP2 = 15, SD0 = 16, SD1 = 17, SD2 = 18, SD3 = 19, RK0 = 20, RK1 = 21, RK2 = 22,
+      WD0 = 23, WD1 = 24, WD2 = 25, WD3 = 26, CO0 = 27, CO1 = 28, GD0 = 29, GD1 = 30, GD2 = 31, TC0 = 32, TC1 = 33,
+      TL0 = 34, TL1 = 35, TL2 = 36, TLW = 37, DV0 = 38, DV1 = 39, DV2 = 40, DV3 = 41, DV4 = 42, TT0 = 43, TT1 = 44, TT2 = 45,
+      JL0 = 46, JL1 = 47;
+
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+// ---------- remap tables ----------
+const SHADE = makeLUT([W0, W1, W1, W2, W2, W3, W3, W4, W4, W5, W5, MD1, HI, W0, FA0, FA1, FA1, MD0, MD0, MD1, MD1, K1,
+  KP0, KP1, KP1, KP2, KP2, MD1, SD0, SD1, SD1, SD2, SD2, SD3, SD3, RK2, RK0, RK1, RK1, RK2, RK2, MD1,
+  WD0, WD1, WD1, WD2, WD2, WD3, WD3, K1, CO0, CO1, CO1, WD2, GD0, GD1, GD1, GD2, GD2, WD2, TC0, TC1, TC1, GD1,
+  TL0, TL1, TL1, TL2, TL2, WD3, TLW, W4, DV0, DV1, DV1, K1, DV2, DV3, DV3, WD2, DV4, W2, TT0, TT1, TT1, TT2, TT2, K1,
+  JL0, JL1, JL1, MD1]);
+const LIGHT = makeLUT([W1, W0, W2, W1, W3, W2, W4, W3, W5, W4, W0, HI, MD1, MD0, MD0, FA1, FA1, FA0, FA0, W3,
+  KP2, KP1, KP1, KP0, KP0, SD0, SD3, SD2, SD2, SD1, SD1, SD0, SD0, HI, RK2, RK1, RK1, RK0, RK0, SD0,
+  WD3, WD2, WD2, WD1, WD1, WD0, WD0, TL0, CO1, CO0, CO0, TL0, GD2, GD1, GD1, GD0, GD0, HI,
+  TL2, TL1, TL1, TL0, TL0, HI, TLW, TL1, DV1, DV0, DV0, RK1, DV3, DV2, DV2, GD0, DV4, HI,
+  TT2, TT1, TT1, TT0, TT0, SD0, JL1, JL0, JL0, HI, K1, MD1, K0, K1]);
+// the torch's colour (LIGHT_TORCH): surfaces in the beam's core turn warm; the water turns a warm green
+const TORCH = makeLUT([SD0, TL0, SD1, TL0, SD2, TL1, SD3, TL1, RK0, TL0, RK1, TL1, RK2, TL2,
+  WD0, TL0, WD1, TL1, WD2, TL2, WD3, TL2, CO1, CO0, CO0, TL0, KP0, SD0, KP1, KP0, KP2, KP1, GD2, GD1, GD1, GD0, GD0, HI,
+  TT2, TT1, TT1, TT0, TT0, SD0, TL2, TL1, TL1, TL0, TL0, HI, K1, TL2, MD0, TLW, MD1, TLW, FA0, TLW, FA1, TLW,
+  W1, TLW, W2, TLW, W3, TLW, W4, TLW, W5, TLW, TLW, TL1]);
+const CONE = makeLUT([W0, TL0, W1, TLW, W2, TLW, W3, TLW, W4, TLW, W5, TLW, FA0, TLW, FA1, TLW, MD0, TLW, MD1, TLW, K1, MD1, TLW, TL1]);
+const JELLY = makeLUT([W1, JL1, W2, JL1, W3, JL1, W4, JL1, W5, JL1, FA0, JL1, FA1, JL1, MD0, JL1, MD1, JL1, JL1, JL0, TLW, JL1]);
+NORIM[DV4] = NORIM[RK0] = NORIM[RK1] = 1;                            // glass + the torch's metal keep their own highlight
+
+// ---------- timeline (64 s) ----------
+// SWIM 0-16 · STOP 16-19 · SHINE 19-27 (fish dart out at 21) · REACH 27-30 (lid opens at 29) · HOLD 30-36
+// ASCEND 36-46 (leaves frame right) · camera holds 44-46, then drifts back 46-64 while the turtle crosses (44-64)
+const T_STOP = 16, T_SHINE = 19, T_DART = 21, T_REACH = 27, T_OPEN = 29, T_HOLD = 30, T_ASC = 36, T_GONE = 47, T_CLOSE = 62;
+const CHEST_X = 386, CHEST_Y = 137;                                 // chest centre-bottom, inside the breach
+function kf(t, t0, t1, a, b) { return t <= t0 ? a : t >= t1 ? b : lerp(a, b, easeSine((t - t0) / (t1 - t0))); }
+// the camera is a pure function of loop time; subjects are drawn at round(x - camF) so a followed subject never wobbles
+function camAt(t) {
+  if (t < T_STOP) return kf(t, 4, T_STOP, 0, 210);
+  if (t < 44) return kf(t, T_ASC, 44, 210, 320);
+  return kf(t, 46, LOOP, 320, 0);
+}
+let TIPX = 16, TIPY = 8;                                             // torch lens, sprite-local, from the last drawn pose
+let AIM_HOLD = 0.45;                                                  // aim at the chest from the hover spot, kept for the ascent blend
+const DVR = { x: 0, y: 0, pitch: 0, kickA: 0, aim: 0, reach: 0, vis: 1 };
+function diverAt(t) {
+  const R = DVR; R.vis = t < T_GONE ? 1 : 0; R.reach = 0;
+  const bob = 1.2 * cyc(16, 0.7);
+  if (t < T_STOP) {
+    R.x = kf(t, 0, T_STOP, -44, 318); R.y = kf(t, 0, T_STOP, 99, 97) + bob * 0.5;
+    R.pitch = kf(t, 11, T_STOP, 0.05, 0.3); R.kickA = kf(t, 11, T_STOP, 0.55, 0.16);
+    R.aim = 0.3 + 0.06 * cyc(16, 0);
+  } else if (t < T_ASC) {
+    // hover above the rail (water behind him), glide down to the breach to reach in, rise back up to look
+    const dn = t < T_REACH ? 0 : t < 28.3 ? easeSine((t - T_REACH) / 1.3) : t < 30.4 ? 1 : t < 32.4 ? 1 - easeSine((t - 30.4) / 2) : 0;
+    R.x = lerp(318, 356, dn); R.y = lerp(97, 113, dn) + bob * (1 - 0.6 * dn);
+    R.pitch = lerp(0.3, 0.1, dn) + 0.03 * cyc(16, 1.9); R.kickA = 0.16 + 0.25 * Math.sin(dn * Math.PI);
+    const toChest = Math.atan2(CHEST_Y - 4 - (R.y + TIPY), CHEST_X - (R.x + TIPX));   // from the lens (last drawn pose) to the chest
+    if (t < T_SHINE) R.aim = kf(t, T_STOP, T_SHINE, 0.3, toChest - 0.2);
+    else if (t < T_REACH) { const u = (t - T_SHINE) / (T_REACH - T_SHINE); R.aim = toChest - 0.2 * Math.cos(u * Math.PI) + 0.3 * Math.sin(u * TAU) * (1 - u); }
+    else R.aim = toChest + 0.02 * cyc(32, 0);
+    if (dn === 0 && t > 33) AIM_HOLD = toChest;
+    R.reach = t < 28.1 ? 0 : t < 28.9 ? kf(t, 28.1, 28.9, 0, 1) : t < 29.2 ? 1 : kf(t, 29.2, 30.2, 1, 0);
+  } else {
+    const u = (t - T_ASC) / (T_GONE - T_ASC);
+    R.x = 318 + 420 * u * u * (1.6 - 0.6 * u); R.y = 97 - 66 * easeSine(u) + bob * (1 - u);
+    R.pitch = kf(t, T_ASC, 38, 0.3, -0.42); R.kickA = kf(t, T_ASC, 37.5, 0.16, 0.6);
+    R.aim = kf(t, T_ASC, 38, AIM_HOLD, -0.35);
+  }
+}
+// flutter-kick phase: integrated from a speed-dependent rate and scaled to a whole number of kicks per loop
+const KICK = new Float32Array(LOOP_FRAMES);
+{
+  let a = 0;
+  for (let f = 0; f < LOOP_FRAMES; f++) { KICK[f] = a; const t = f / 60; diverAt(t); a += (0.5 + 1.9 * DVR.kickA) / 60; }
+  const k = Math.round(a) / a;
+  for (let f = 0; f < LOOP_FRAMES; f++) KICK[f] *= k * TAU;
+}
+// turtle: crosses left -> right while the camera drifts back the other way (never pixel-locked, so no wobble)
+const TUR = { x: 0, y: 0, vis: 0 };
+function turtleAt(t) { TUR.vis = t >= 43 ? 1 : 0; const u = (t - 43) / (LOOP - 43); TUR.x = 276 + 300 * u; TUR.y = 74 + 10 * u + 2 * cyc(16, 2.1); }
+function lidAt(t) { return t < T_OPEN - 0.5 || t >= T_CLOSE + 0.6 ? 0 : t < T_OPEN ? easeSine((t - T_OPEN + 0.5) / 0.5) : t < T_CLOSE ? 1 : 1 - easeSine((t - T_CLOSE) / 0.6); }
+
+// ---------- baked layers: water ramp (screen), far reef 0.25, mid rocks 0.5, playfield 1.0, foreground 1.4 ----------
+const P_FAR = 0.25, P_MID = 0.5, P_JEL = 0.7, P_SRF = 0.6, P_FG = 1.4;
+const FARW = W + Math.ceil((WW - W) * P_FAR), MIDW = W + Math.ceil((WW - W) * P_MID), FGW = W + Math.ceil((WW - W) * P_FG);
+const BG = new Uint8Array(W * H), FAR = new Uint8Array(FARW * H), MID = new Uint8Array(MIDW * H);
+const PLAY = new Uint8Array(WW * H), FG = new Uint8Array(FGW * H);
+const SURF = new Uint8Array(WW * H);                                 // 1 = faces up (takes caustics), 2 = inside the hull
+function n1(x, s) { return Math.sin(x * 0.071 + s) * 0.6 + Math.sin(x * 0.173 + s * 2.3) * 0.3 + Math.sin(x * 0.419 + s * 5.1) * 0.1; }
+function dithBand(buf, bw, x, y, c0, c1, lvl) { buf[y * bw + x] = lvl * 16 > bay(x, y) ? c1 : c0; }
+
+// water: brightest under the surface, darkening with depth, in dithered bands
+const BAND_Y = [36, 68, 100, 134], BAND_C = [W1, W2, W3, W4, W5];
+function bakeBG() {
+  const tw = Math.max(4, Math.round(10 * DKW));
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    let i = 0; while (i < 4 && y >= BAND_Y[i] + tw / 2) i++;
+    let c = BAND_C[i];
+    if (i < 4 && y >= BAND_Y[i] - tw / 2) c = ((y - BAND_Y[i] + tw / 2) / tw) * 16 > bay(x, y) ? BAND_C[i + 1] : BAND_C[i];
+    BG[y * W + x] = c;
+  }
+}
+const DKW = 1;                                                       // DITHER medium
+
+function bakeFar() {
+  FAR.fill(CLEAR); target(FAR, FARW, H, 0, 0);
+  for (let x = 0; x < FARW; x++) {
+    let top = Math.round(130 + 11 * n1(x, 0.4));
+    const sp = [70, 212, 338];                                        // distant rock spires
+    for (let k = 0; k < 3; k++) { const d = Math.abs(x - sp[k]); if (d < 9) top = Math.min(top, Math.round(88 + k * 7 + d * d * 0.35 + 2 * n1(x * 3, k))); }
+    for (let y = top; y < IMG_BOT; y++) FAR[y * FARW + x] = y === top ? FA0 : y - top < 3 && ((x + y) & 3) === 0 ? FA0 : FA1;
+    if (x % 23 === 7) { const h = 16 + ((x * 7) % 19); for (let y = top - h; y < top; y++) px(x + Math.round(1.5 * Math.sin(y * 0.2 + x)), y, FA1); }
+  }
+}
+
+function blob(buf, bw, cx, base, w, h, s, cTop, cBody, cLow, surf) {
+  const hw = w / 2;
+  for (let x = Math.floor(cx - hw); x <= Math.ceil(cx + hw); x++) {
+    const u = (x - cx) / hw; if (u <= -1 || u >= 1) continue;
+    const top = Math.round(base - h * Math.sqrt(1 - u * u) * (0.82 + 0.18 * n1(x * 2.1, s)));
+    for (let y = top; y <= base + 2; y++) {
+      const r = y - top, deep = (y - top) / (base - top + 1);
+      let c = r === 0 ? cTop : r < 3 && ((x * 3 + y) & 3) !== 0 ? cTop : deep > 0.62 ? cLow : cBody;
+      if (deep > 0.5 && deep <= 0.62 && ((x + y * 2) & 3) === 0) c = cLow;
+      if (x >= 0 && x < bw && y >= 0 && y < H) { buf[y * bw + x] = c; if (surf && r < 3) SURF[y * WW + x] = 1; }
+    }
+  }
+}
+function bakeMid() {
+  MID.fill(CLEAR);
+  blob(MID, MIDW, 30, 170, 64, 76, 1, MD0, MD1, MD1, false);
+  blob(MID, MIDW, 176, 170, 40, 104, 2, MD0, MD1, MD1, false);
+  blob(MID, MIDW, 206, 170, 30, 70, 3, MD0, MD1, MD1, false);
+  blob(MID, MIDW, 318, 170, 76, 64, 4, MD0, MD1, MD1, false);
+  blob(MID, MIDW, 436, 170, 44, 90, 5, MD0, MD1, MD1, false);
+}
+
+// ---- playfield: sand, rocks, the wreck, anchor, amphorae ----
+const SANDY = new Int16Array(WW);
+for (let x = 0; x < WW; x++) SANDY[x] = Math.round(151 + 3 * Math.sin(x / 41 + 0.6) + 2 * Math.sin(x / 17 + 2.1) - (x > 256 && x < 530 ? 3 * Math.sin((x - 256) / 274 * Math.PI) : 0));
+const HX0 = 266, HX1 = 524;                                          // hull extent
+function gunwale(x) { return 113 - 29 * Math.pow(Math.max(0, x - HX0) / (HX1 - HX0), 1.8); }
+function bowX(y) { const s = clamp((y - 84) / 72, 0, 1); return 496 + 28 * Math.pow(1 - s, 1.5); }
+const BRX = 388, BRY = 127;                                          // breach centre
+function inBreach(x, y) { const dx = (x - BRX) / 17, dy = (y - BRY) / 10.5, a = Math.atan2(dy, dx); return dx * dx + dy * dy < Math.pow(1 + 0.22 * Math.sin(a * 5 + 1) + 0.12 * Math.sin(a * 11), 2); }
+function bakeWreck() {
+  target(PLAY, WW, H, 0, 0);
+  const jag = new Int8Array(12); for (let i = 0; i < 12; i++) jag[i] = Math.floor(rnd() * 16);
+  for (let x = HX0; x <= HX1; x++) {
+    const g = Math.round(gunwale(x));
+    for (let y = g; y < 162; y++) {
+      if (x > bowX(y)) continue;
+      const r = y - g, strake = r >> 2;
+      if (x < HX0 + jag[Math.min(11, strake)]) continue;               // broken stern: planks end raggedly
+      let c = WD1;
+      if ((r & 3) === 0 && r > 0) c = WD2;                              // plank seams
+      else if ((r & 3) === 1 && ((x * 7 + strake * 13) % 29) === 0) c = WD2;   // butt joints
+      if (r < 2) c = WD0;                                               // gunwale rail, lit from above
+      else if (r === 2) c = (x & 1) ? WD0 : WD1;
+      if (y > 132) { const a = (y - 132) / 22 + 0.35 * n1(x * 1.7, 3); if (a * 16 > bay(x, y) + 6) c = a > 0.9 ? KP2 : ((x + y) & 1 ? KP1 : KP2); }  // algae on the lower hull
+      if (y > 146 && ((x + y) & 1)) c = WD2;
+      PLAY[y * WW + x] = c;
+      if (r < 3) SURF[y * WW + x] = 1;
+    }
+    if (x > 300 && x < 500 && (x % 13) === 0) for (let k = 0; k < 3; k++) px(x, g - 1 - k, WD1);   // rail posts
+  }
+  for (let k = 0; k < 3; k++) { const rx = HX0 + 8 + k * 9; for (let y = 0; y < 7 + k * 3; y++) { px(rx, Math.round(gunwale(rx)) - y, WD1); px(rx + 1, Math.round(gunwale(rx)) - y, y > 2 ? WD2 : WD1); } }  // broken ribs
+  // breach: dark interior, ribs, a plank floor and broken plank ends round the edge
+  for (let y = BRY - 16; y <= BRY + 14; y++) for (let x = BRX - 24; x <= BRX + 24; x++) {
+    if (!inBreach(x, y)) continue;
+    let c = WD3;
+    if (x === 375 || x === 392 || x === 406) c = WD2;
+    if (y >= 137) c = y === 137 ? WD2 : WD3;
+    const i = y * WW + x; PLAY[i] = c; SURF[i] = 2;
+    if (!inBreach(x, y - 1) && ((x * 5) % 7) < 3) { PLAY[i] = WD2; }   // thickness of the hull at the top edge
+  }
+  for (let k = 0; k < 9; k++) {                                       // splintered plank ends
+    const a = k / 9 * TAU + 0.3, ex = Math.round(BRX + 16 * Math.cos(a)), ey = Math.round(BRY + 10 * Math.sin(a)), l = 2 + (k % 3);
+    for (let j = 0; j < l; j++) px(ex - Math.round(Math.cos(a) * j), ey - Math.round(Math.sin(a) * j * 0.6), j === l - 1 ? WD2 : WD1);
+  }
+  // chest (closed, in the dark: only the torch shows its colours)
+  for (let y = CHEST_Y - 7; y <= CHEST_Y; y++) for (let x = CHEST_X - 7; x <= CHEST_X + 6; x++) {
+    const edge = x === CHEST_X - 7 || x === CHEST_X + 6 || y === CHEST_Y;
+    PLAY[y * WW + x] = (x === CHEST_X - 5 || x === CHEST_X + 4) ? GD2 : y <= CHEST_Y - 6 ? (y === CHEST_Y - 7 ? WD0 : WD1) : y === CHEST_Y - 5 ? WD2 : edge ? WD2 : WD1;
+  }
+  px(CHEST_X, CHEST_Y - 5, GD1); px(CHEST_X, CHEST_Y - 4, GD2); px(CHEST_X - 1, CHEST_Y - 4, GD2);
+  // portholes near the bow
+  const PH = [452, 104, 480, 100];
+  for (let k = 0; k < 4; k += 2) { ellipse(PH[k] + 0.5, PH[k + 1] + 0.5, 3.2, 3.2, RK1); ellipse(PH[k] + 0.5, PH[k + 1] + 0.5, 2, 2, WD3); px(PH[k] - 1, PH[k + 1] - 1, RK0); }
+  // barnacles
+  for (let i = 0; i < 70; i++) { const x = Math.floor(HX0 + 20 + rnd() * 220), y = Math.floor(118 + rnd() * 30); if (PLAY[y * WW + x] !== CLEAR && !SURF[y * WW + x]) px(x, y, rnd() < 0.5 ? RK0 : SD1); }
+  // broken mast leaning back over the hull, with a hanging yard and ropes
+  const MX0 = 436, MY0 = Math.round(gunwale(436)), MX1 = 402, MY1 = 34;
+  const ml = Math.hypot(MX1 - MX0, MY1 - MY0);
+  for (let j = 0; j <= ml; j++) {
+    const x = Math.round(MX0 + (MX1 - MX0) * j / ml), y = Math.round(MY0 + (MY1 - MY0) * j / ml);
+    px(x - 1, y, WD0); px(x, y, WD1); px(x + 1, y, WD2);
+    SURF[y * WW + x - 1] = 1;
+  }
+  px(MX1 - 1, MY1 - 1, WD1); px(MX1, MY1 - 2, WD0); px(MX1 + 1, MY1 - 1, WD1);
+  line(408, 48, 426, 60, WD1); line(408, 47, 426, 59, WD0);
+  for (let x = 426; x <= 488; x += 1) { const u = (x - 426) / 62, y = Math.round(60 + (Math.round(gunwale(488)) - 60) * u + 14 * u * (1 - u)); if ((x & 3) !== 3) px(x, y, WD2); }
+  for (let k = 0; k < 3; k++) { const sx = 410 + k * 6, sy = 49 + k * 4; for (let j = 0; j < 12 + k * 4; j++) px(sx + Math.round(1.2 * Math.sin(j * 0.5 + k)), sy + j, j & 1 ? KP1 : KP2); }
+}
+function bakePlay() {
+  PLAY.fill(CLEAR); SURF.fill(0);
+  bakeWreck();
+  target(PLAY, WW, H, 0, 0);
+  // anchor (half buried) and amphorae
+  const AX = 572;
+  for (let y = 126; y < 152; y++) { px(AX, y, RK1); px(AX + 1, y, RK2); }
+  ellipse(AX + 1, 123, 3.5, 3.5, RK1); ellipse(AX + 1, 123, 2, 2, CLEAR); px(AX - 1, 121, RK0);
+  hline(AX - 8, AX + 9, 131, RK2); hline(AX - 8, AX + 9, 130, RK1); px(AX - 3, 130, WD1); px(AX + 5, 131, WD1);
+  for (let k = -1; k <= 1; k += 2) for (let j = 0; j < 9; j++) px(AX + k * j + (k > 0 ? 1 : 0), 151 - Math.round(j * j / 9), j > 6 ? RK0 : RK1);
+  ellipse(606, 146, 7, 3.4, WD1); ellipse(605, 145, 5, 2, WD0); hline(612, 616, 145, WD1); px(617, 144, WD0);
+  ellipse(627, 146, 3.5, 6, WD1); hline(626, 628, 139, WD0); px(626, 142, WD0);
+  // rocks (tops take caustics), with coral fans and anemones on some of them
+  const RX = [28, 44, 104, 150, 176, 232, 548, 598, 630], RW = [34, 18, 30, 22, 16, 26, 24, 30, 20], RH = [16, 9, 13, 11, 7, 14, 12, 10, 12];
+  for (let i = 0; i < RX.length; i++) blob(PLAY, WW, RX[i], SANDY[RX[i]] + 1, RW[i], RH[i], i * 1.7, RK0, RK1, RK2, true);
+  const CX = [38, 104, 232, 600], CH = [9, 7, 10, 8];
+  for (let i = 0; i < CX.length; i++) {
+    const bx = CX[i], by = SANDY[bx] - RH[RX.indexOf(bx) >= 0 ? RX.indexOf(bx) : 0] + 3;
+    for (let b = -2; b <= 2; b++) { const ex = bx + b * 3, ey = by - CH[i] + Math.abs(b); line(bx, by, ex, ey, CO1); px(ex, ey, CO0); px(ex, ey + 1, CO0); }
+  }
+  const AN = [150, 548, 176];
+  for (let i = 0; i < AN.length; i++) { const bx = AN[i], by = SANDY[bx] - 9; for (let b = -2; b <= 2; b++) { px(bx + b, by - 1 - (b & 1), KP0); px(bx + b, by - 2 - (b & 1), CO0); } hline(bx - 2, bx + 2, by, KP1); }
+  // sand, drawn over everything so the hull, anchor and amphorae sit buried in it
+  for (let x = 0; x < WW; x++) {
+    for (let y = SANDY[x]; y < IMG_BOT; y++) {
+      const r = y - SANDY[x], i = y * WW + x;
+      let c = r === 0 ? SD0 : r < 4 ? (((x * 5 + y * 3) % 11) === 0 ? SD0 : SD1) : SD1;
+      if (r >= 6) c = (r - 6) / 8 * 16 > bay(x, y) ? SD2 : SD1;
+      if (r >= 14) c = (r - 14) / 6 * 16 > bay(x, y) ? SD3 : SD2;
+      if (r === 1 && PLAY[i] !== CLEAR && (PLAY[i] < SD0 || PLAY[i] > SD3) && PLAY[i - WW] !== CLEAR) c = SD2;   // contact shade against objects
+      if (PLAY[i] !== CLEAR && r < 1) continue;
+      PLAY[i] = c; SURF[i] = r < 12 ? 1 : 0;
+    }
+    if ((x % 9) === 4) { const r = 4 + ((x * 3) % 7), y = SANDY[x] + r; hline(x, x + 2, y, SD2); hline(x + 1, x + 3, y - 1, SD0); }   // ripple marks
+  }
+  for (let i = 0; i < 26; i++) { const x = Math.floor(rnd() * WW), y = SANDY[x] + 2 + Math.floor(rnd() * 9); px(x, y, rnd() < 0.5 ? SD0 : RK1); }   // shells + pebbles
+  px(142, SANDY[142] + 3, CO0); px(141, SANDY[142] + 4, CO0); px(143, SANDY[142] + 4, CO0); px(142, SANDY[142] + 5, CO1);   // starfish
+}
+function bakeFG() {
+  FG.fill(CLEAR); target(FG, FGW, H, 0, 0);
+  for (let x = 0; x < 90; x++) { const top = Math.round(152 + 12 * (x / 90) * (x / 90) - 6 * n1(x * 3, 7)); for (let y = top; y < IMG_BOT; y++) FG[y * FGW + x] = K1; }
+  for (let x = 600; x < 740; x++) { const u = (x - 670) / 70, top = Math.round(160 - 14 * Math.sqrt(Math.max(0, 1 - u * u)) - 3 * n1(x * 3, 9)); for (let y = top; y < IMG_BOT; y++) FG[y * FGW + x] = K1; }
+}
+
+// ---- kelp (live, strong sway): stalk + alternating blades; sway grows with height and lags up the stalk ----
+const KELP_N = 13, KX = new Int16Array([10, 26, 48, 66, 88, 118, 140, 196, 218, 244, 540, 590, 618]), KH = new Int16Array(KELP_N), KPH = new Float32Array(KELP_N);
+for (let i = 0; i < KELP_N; i++) { KH[i] = 64 + Math.floor(hash(i * 31 + 5) * 58); KPH[i] = hash(i * 17 + 3) * TAU; }
+const MKX = new Int16Array([12, 58, 98, 142, 238, 262, 372, 404, 460]), MKN = 9;
+const FKX = new Int16Array([34, 78, 640, 700]), FKH = new Int16Array([96, 64, 88, 112]);
+function kelp(bx, by, hgt, ph, amp, cs, cl, ct, bladeW, spacing) {
+  const w0 = TAU * 16 * gT / LOOP + ph;
+  let pxv = bx;
+  for (let h = 0; h <= hgt; h++) {
+    const f = h / hgt, sx = bx + Math.round(amp * f * f * Math.sin(w0 - h * 0.05) + amp * 0.3 * f * Math.sin(w0 * 0.5 + 1.3 - h * 0.03));
+    const y = by - h;
+    px(sx, y, cs); if (sx !== pxv) px(pxv, y, cs);
+    pxv = sx;
+    if (h > 6 && (h % spacing) === 0) {
+      // blades float: out from the stalk, then up, trailing with the current
+      const side = ((h / spacing) & 1) ? 1 : -1, lean = Math.cos(w0 - h * 0.05);
+      for (let k = 1; k <= 5 + (h & 1); k++) {
+        const bxk = sx + side * Math.min(k, 3) + (k > 3 ? Math.round(lean * (k - 2) * 0.6) : 0), byk = y - (k > 2 ? k - 2 : 0);
+        px(bxk, byk, ct); for (let j = 1; j < bladeW; j++) px(bxk + (side > 0 ? j : -j) * (k > 3 ? 0 : 0), byk + j, cl);
+      }
+    }
+  }
+}
+
+// ---------- subjects: built from capsules in local space, rotated by pitch, redrawn on a 12 fps pose grid ----------
+function capsule(ax, ay, bx, by, r, c) {
+  const x0 = Math.floor(Math.min(ax, bx) - r), x1 = Math.ceil(Math.max(ax, bx) + r), y0 = Math.floor(Math.min(ay, by) - r), y1 = Math.ceil(Math.max(ay, by) + r);
+  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1e-6, r2 = r * r;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5, u = clamp(((X - ax) * dx + (Y - ay) * dy) / L2, 0, 1), ex = X - ax - dx * u, ey = Y - ay - dy * u;
+    if (ex * ex + ey * ey <= r2) px(x, y, c);
+  }
+}
+let RC = 1, RS = 0, RX_ = 0, RY_ = 0;
+function rot(lx, ly) { RX_ = lx * RC - ly * RS; RY_ = lx * RS + ly * RC; }
+// capsule between two local points
+function lcap(ax, ay, bx, by, r, c) { rot(ax, ay); const X0 = RX_, Y0 = RY_; rot(bx, by); capsule(X0, Y0, RX_, RY_, r, c); }
+function lpx(lx, ly, c) { rot(lx, ly); px(Math.floor(RX_ + 0.5), Math.floor(RY_ + 0.5), c); }
+
+// ---- diver (faces right; local x forward along the body, y toward the belly; origin at the hips) ----
+const DBW = 80, DBH = 64, DAX = 38, DAY = 32;
+const DBUF = new Uint8Array(DBW * DBH);
+let REGX = 0, REGY = 0;                                              // regulator, sprite-local (the lens, TIPX/TIPY, lives with the story)
+function leg(ph, kickA, c, finC) {
+  const a1 = Math.PI + 0.1 + kickA * 0.55 * Math.sin(ph), a2 = a1 + 0.2 + 0.4 * kickA * Math.max(0, Math.sin(ph + 1.2)), a3 = a2 + 0.25 * kickA * Math.sin(ph - 1.1);
+  const kx = 6 * Math.cos(a1), ky = 0.6 + 6 * Math.sin(a1), ax = kx + 6 * Math.cos(a2), ay = ky + 6 * Math.sin(a2);
+  lcap(0, 0.6, kx, ky, 1.5, c); lcap(kx, ky, ax, ay, 1.3, c);
+  const tx = ax + 8 * Math.cos(a3), ty = ay + 8 * Math.sin(a3), nx = -Math.sin(a3), ny = Math.cos(a3);
+  for (let j = 0; j <= 8; j++) {                                      // fin: widens toward a yellow-striped tip
+    const u = j / 8, cx = ax + (tx - ax) * u, cy = ay + (ty - ay) * u, w = 0.6 + 1.9 * u;
+    for (let k = -2; k <= 2; k++) { const o = k / 2 * w; lpx(cx + nx * o, cy + ny * o, j >= 7 ? finC : c === DV0 ? DV1 : K1); }
+  }
+}
+function drawDiver(pitch, ph, kickA, aim, reach) {
+  DBUF.fill(CLEAR); target(DBUF, DBW, DBH, DAX, DAY);
+  RC = Math.cos(pitch); RS = Math.sin(pitch);
+  // far side first: far leg and the reaching arm (in shade)
+  leg(ph + Math.PI, kickA, DV1, DV3);
+  const ra = lerp(Math.PI - 0.5, 0.62 - pitch, reach), rl = lerp(4.6, 5.8, reach), fa = lerp(Math.PI - 0.1, 0.55 - pitch, reach);
+  const ex = 9 + rl * Math.cos(ra), ey = -0.4 + rl * Math.sin(ra);
+  lcap(9, -0.4, ex, ey, 1.2, DV1); lcap(ex, ey, ex + rl * Math.cos(fa), ey + rl * Math.sin(fa), 1.1, DV1);
+  // torso, tank, head
+  lcap(0, 0, 10.5, -0.4, 2.7, DV0);
+  lcap(1.6, -3.9, 9.2, -3.7, 1.9, DV2);
+  lpx(10.8, -4.1, RK1); lpx(6, -1, DV1); lpx(6, 0, DV1); lpx(6, 1, DV1);
+  lcap(13.8, -1.3, 13.8, -1.3, 3.1, DV0);
+  lpx(15.8, -2.3, DV4); lpx(16.7, -2.3, DV4); lpx(15.8, -1.4, DV4); lpx(16.7, -1.4, HI);
+  lpx(16.6, 0.6, DV1); lpx(15.8, 0.8, DV1);
+  rot(16.8, 0.4); REGX = RX_; REGY = RY_;
+  // near leg
+  leg(ph, kickA, DV0, DV2);
+  // near arm with the torch, aimed in world space
+  const ar = aim - pitch, ua = ar + 0.45;
+  const elx = 9.6 + 4.8 * Math.cos(ua), ely = 0.9 + 4.8 * Math.sin(ua), hx = elx + 4.6 * Math.cos(ar), hy = ely + 4.6 * Math.sin(ar);
+  lcap(9.6, 0.9, elx, ely, 1.25, DV0); lcap(elx, ely, hx, hy, 1.15, DV0);
+  lcap(hx, hy, hx + 3.6 * Math.cos(ar), hy + 3.6 * Math.sin(ar), 1.35, RK1);
+  rot(hx + 4.9 * Math.cos(ar), hy + 4.9 * Math.sin(ar)); TIPX = RX_; TIPY = RY_;
+}
+
+// ---- sea turtle (faces right), 4-frame front-flipper stroke ----
+const TBW = 60, TBH = 38, TAX = 30, TAY = 19;
+const TBUF = new Uint8Array(TBW * TBH);
+const FLAP = new Float32Array([-0.95, -0.35, 0.45, 0.95, 0.35, -0.4]);
+function flipper(hx, hy, a, len, c, edge) {
+  const tx = hx + len * Math.cos(a), ty = hy + len * Math.sin(a), nx = -Math.sin(a), ny = Math.cos(a);
+  for (let j = 0; j <= len; j++) {
+    const u = j / len, cx = hx + (tx - hx) * u, cy = hy + (ty - hy) * u, w = 1.9 * (1 - u) + 0.6 * u + 0.8 * Math.sin(u * Math.PI);
+    for (let k = -3; k <= 3; k++) { const o = k / 3 * w; px(Math.floor(cx + nx * o + 0.5), Math.floor(cy + ny * o + 0.5), k === -3 ? edge : c); }
+  }
+}
+function drawTurtle(f) {
+  TBUF.fill(CLEAR); target(TBUF, TBW, TBH, TAX, TAY);
+  const a = FLAP[f % 6], b = FLAP[(f + 3) % 6];
+  flipper(6, 0, Math.PI + b, 13, TT2, TT2);                            // far front flipper
+  flipper(-11, 2, Math.PI - 0.3 + 0.2 * b, 5, TT2, TT2);
+  capsule(12, 0.5, 15, 0, 2, TT1);                                  // neck + head
+  ellipse(16.5, -0.6, 3.4, 2.9, TT1);
+  px(17, -1, K1); px(19, 1, SD0); px(18, 1, SD0); px(17, 1, SD0); px(15, -2, TT0); px(16, -3, TT0);
+  for (let lx = -13; lx <= 13; lx++) {                                 // shell: domed carapace, scute seams, pale plastron
+    const top = -Math.round(8.2 * Math.sqrt(Math.max(0, 1 - (lx / 13.6) * (lx / 13.6))));
+    for (let y = top; y <= 1; y++) px(lx, y, (lx === -7 || lx === 0 || lx === 7) && y > top + 1 ? TT2 : y === -4 && lx > -10 && lx < 10 ? TT2 : TT1);
+    px(lx, 2, (lx & 1) ? SD0 : SD1); if (lx > -12 && lx < 12) px(lx, 3, SD1);
+    if (((lx + 20) % 7) === 3 && top < -1) { px(lx, top + 2, TT0); px(lx + 1, top + 2, TT0); }
+  }
+  flipper(-11, 2, Math.PI - 0.1 + 0.25 * a, 6, TT1, SD0);               // near rear + front flippers
+  flipper(7, 1, Math.PI + a, 15, TT1, SD0);
+}
+
+// ---- fish: 4 px bodies drawn straight into the frame ----
+function fish(x, y, dir, body, tail, f) {
+  px(x, y, body); px(x + dir, y, body); px(x + 2 * dir, y, body); px(x - dir, y, tail);
+  px(x - dir, y + ((f & 1) ? 1 : -1), tail);
+}
+
+// ---------- effects: caustics, shafts from the surface, the torch, jellyfish glow, bubbles, marine snow ----------
+const SOLID = new Uint8Array(W * H), LITM = new Uint8Array(W * H), LV = new Uint8Array(W * H);
+// caustic net: a tiling cell pattern (bright where two cells meet), sampled twice with different drifts
+const CT = new Uint8Array(64 * 64);
+function bakeCaustics() {
+  const N = 8, PXa = new Float32Array(N * N), PYa = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { PXa[j * N + i] = (i + 0.2 + rnd() * 0.6) * 8; PYa[j * N + i] = (j + 0.2 + rnd() * 0.6) * 8; }
+  for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+    let f1 = 1e9, f2 = 1e9;
+    for (let k = 0; k < N * N; k++) {
+      let dx = Math.abs(x - PXa[k]), dy = Math.abs(y - PYa[k]); if (dx > 32) dx = 64 - dx; if (dy > 32) dy = 64 - dy;
+      const d = Math.sqrt(dx * dx + dy * dy); if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) f2 = d;
+    }
+    CT[y * 64 + x] = clamp(Math.round(15 - (f2 - f1) * 5), 0, 15);
+  }
+}
+function caustics(cam) {
+  const o1x = Math.round(64 * 3 * gT / LOOP), o1y = Math.round(64 * 2 * gT / LOOP), o2x = Math.round(64 * 2 * gT / LOOP), o2y = Math.round(64 * 4 * gT / LOOP);
+  for (let y = 30; y < IMG_BOT; y++) {
+    const r1 = ((y * 2 + o1y) & 63) << 6, r2 = ((y * 2 - o2y + 640) & 63) << 6;
+    for (let x = 0; x < W; x++) {
+      const wx = x + cam; if (SURF[y * WW + wx] !== 1) continue;
+      const v = CT[r1 | ((wx + o1x) & 63)] + CT[r2 | ((wx - o2x + 6417) & 63)], lvl = (v - 15) * 2;
+      if (lvl > bay(x, y)) { const i = y * W + x; FB[i] = LIGHT[FB[i]]; LITM[i] = 1; }
+    }
+  }
+}
+// god rays from the surface: slanted, widening, fading with depth; accumulated per pixel, applied once
+const RAYN = 7, RAYX = new Int16Array([36, 110, 176, 246, 318, 392, 466]), RAYW = new Float32Array([7, 12, 6, 15, 8, 11, 7]), RAYS = new Float32Array([0.8, 1, 0.65, 1, 0.75, 0.95, 0.7]);
+const SHY = IMG_TOP + 4, SHL = 118;
+function shafts(cam) {
+  const off = Math.round(cam * P_SRF);
+  for (let r = 0; r < RAYN; r++) {
+    const sw = 2 * cyc(8, r * 1.3), st = RAYS[r] * (0.8 + 0.2 * cyc(8, r * 2.1 + 1)) * 15;
+    for (let d = 0; d < SHL; d++) {
+      const y = SHY + d, cx = RAYX[r] - off + sw - 0.3 * d, hw = RAYW[r] / 2 + d * 0.08, f = 1 - d / SHL, lvY = st * f * Math.sqrt(f);
+      const x0 = Math.max(0, Math.floor(cx - hw)), x1 = Math.min(W - 1, Math.ceil(cx + hw));
+      for (let x = x0; x <= x1; x++) { const l = lvY * (1 - Math.abs(x + 0.5 - cx) / hw), i = y * W + x; if (l > LV[i]) LV[i] = l; }
+    }
+  }
+  for (let y = SHY; y < SHY + SHL; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, l = LV[i]; if (!l) continue;
+    LV[i] = 0; if (l > bay(x, y)) FB[i] = LIGHT[FB[i]]; if (l > 6) LITM[i] = 1;
+  }
+}
+// underside of the surface: a bright rippling band with glints on the crests
+function surfaceBand(cam) {
+  const off = Math.round(cam * P_SRF), ph1 = TAU * 8 * gT / LOOP, ph2 = TAU * 12 * gT / LOOP;
+  for (let x = 0; x < W; x++) {
+    const wx = x + off, w = 1.5 * Math.sin(wx * 0.11 + ph1) + 0.9 * Math.sin(wx * 0.27 - ph2 + 1.3), ys = IMG_TOP + 4 + Math.round(w);
+    for (let y = IMG_TOP; y < ys; y++) FB[y * W + x] = W0;
+    FB[ys * W + x] = w > 1.5 ? HI : W0;
+    if (((wx + ys) & 3) === 0) FB[(ys + 1) * W + x] = W0;
+  }
+}
+// torch: a cone from the lens. Surfaces in the core take the torch's colour, the outer beam brightens them,
+// and the water itself shows the beam as a warm-green haze (marine snow in the light).
+const T_LEN = 80, T_HA = 0.3;
+function torchBeam(tx, ty, aim) {
+  const cx = Math.cos(aim), cy = Math.sin(aim), nx = -cy, ny = cx, ex = tx + cx * T_LEN, ey = ty + cy * T_LEN, we = T_LEN * T_HA;
+  const x0 = Math.max(0, Math.floor(Math.min(tx, ex + nx * we, ex - nx * we))), x1 = Math.min(W - 1, Math.ceil(Math.max(tx, ex + nx * we, ex - nx * we)));
+  const y0 = Math.max(IMG_TOP, Math.floor(Math.min(ty, ey + ny * we, ey - ny * we))), y1 = Math.min(IMG_BOT - 1, Math.ceil(Math.max(ty, ey + ny * we, ey - ny * we)));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const dx = x + 0.5 - tx, dy = y + 0.5 - ty, al = dx * cx + dy * cy; if (al < 2 || al > T_LEN) continue;
+    const lat = Math.abs(dx * nx + dy * ny), w = al * T_HA; if (lat > w) continue;
+    const rr = lat / w, lvl = (1 - al / T_LEN) * (1 - rr * rr) * 20, i = y * W + x, b = bay(x, y);
+    if (SOLID[i]) { if (rr < 0.55 && al < T_LEN * 0.7 && lvl > b) FB[i] = TORCH[FB[i]]; else if (lvl * 0.8 > b) FB[i] = LIGHT[FB[i]]; }
+    else if (lvl * 0.6 > b) FB[i] = CONE[FB[i]];
+    if (lvl > 5) LITM[i] = 1;
+  }
+}
+// jellyfish (parallax 0.7): magenta halo in the water, pulsing bell, trailing tentacles
+const JX = new Int16Array([150, 430]), JYB = new Int16Array([58, 86]);
+function jellies(cam) {
+  const off = Math.round(cam * P_JEL);
+  for (let j = 0; j < 2; j++) {
+    const x = JX[j] - off + Math.round(6 * cyc(2, j * 2.2)), y = JYB[j] + Math.round(9 * cyc(4, j * 1.4 + 0.5)); if (x < -20 || x > W + 20) continue;
+    const pulse = cyc(32, j * 0.9) > 0.2 ? 1 : 0;
+    target(FB, W, H, 0, 0);
+    glow(x + 0.5, y + 1.5, 9, 8, JELLY, 9);
+    glow(x + 0.5, y + 0.5, 5, 4, JELLY, 14);
+    const bw = pulse ? 4 : 5, bh = pulse ? 5 : 4;
+    for (let r = 0; r < bh; r++) { const hw = Math.round(bw * Math.sqrt(1 - (r - bh) * (r - bh) / (bh * bh + 1))); hline(x - hw, x + hw, y + r - bh + 1, r === 0 ? JL0 : r === bh - 1 ? JL1 : JL0); }
+    px(x - 1, y - bh + 2, HI);
+    for (let k = -2; k <= 2; k++) for (let l = 1; l <= 8 + (k & 1) * 4; l++) { const tx = x + k * (pulse ? 1 : 2) + Math.round(1.2 * Math.sin(l * 0.5 + TAU * 16 * gT / LOOP + k)); if ((l & 1) || k === 0) px(tx, y + 1 + l, k === 0 && l < 5 ? JL0 : JL1); }
+  }
+}
+
+// ---- bubbles: pooled, rising, wobbling, popping at the surface ----
+const BN = 180, BX = new Float32Array(BN), BY = new Float32Array(BN), BV = new Float32Array(BN), BPH = new Float32Array(BN), BS = new Uint8Array(BN), BA = new Uint8Array(BN);
+let bHead = 0;
+function emitBubble(x, y, s, v, ph) { const i = bHead; bHead = (bHead + 1) % BN; BX[i] = x; BY[i] = y; BS[i] = s; BV[i] = v; BPH[i] = ph; BA[i] = 1; }
+function stepBubbles() {
+  for (let i = 0; i < BN; i++) {
+    if (!BA[i]) continue;
+    BY[i] -= BV[i] * STEP; BV[i] = Math.min(BV[i] + 5 * STEP, 34 + BS[i] * 4);
+    if (BY[i] < IMG_TOP + 6) BA[i] = 0;
+  }
+}
+function drawBubbles(cam) {
+  target(FB, W, H, 0, 0);
+  for (let i = 0; i < BN; i++) {
+    if (!BA[i]) continue;
+    const x = Math.round(BX[i] + 0.9 * Math.sin(BY[i] * 0.22 + BPH[i])) - cam, y = Math.round(BY[i]); if (x < -3 || x > W + 3) continue;
+    const lit = y >= IMG_TOP && y < IMG_BOT && x >= 0 && x < W && LITM[y * W + x];
+    if (BS[i] === 1) px(x, y, lit ? HI : W0);
+    else if (BS[i] === 2) { px(x, y, HI); px(x + 1, y, W0); px(x, y + 1, W0); px(x + 1, y + 1, lit ? W0 : W1); }
+    else { hline(x, x + 1, y - 1, W0); hline(x, x + 1, y + 2, W1); vline(x - 1, y, y + 1, W0); vline(x + 2, y, y + 1, W1); px(x, y, HI); }
+  }
+}
+// marine snow: pure functions of loop time in screen space (parallax 0.85), glinting in the light
+const SNN = 70;
+function snow(camF) {
+  for (let k = 0; k < SNN; k++) {
+    const sp = 1 + (k % 3), dir = (k & 1) ? 1 : -1;
+    let x = hash(k * 3 + 1) * 328 + dir * 328 * gT / LOOP - camF * 0.85 + 1.5 * Math.sin(TAU * 8 * gT / LOOP + k); x = ((x % 328) + 328) % 328 - 4;
+    let y = hash(k * 3 + 2) * 156 + 156 * sp * gT / LOOP; y = (y % 156) + IMG_TOP + 2;
+    const X = Math.round(x), Y = Math.floor(y); if (X < 0 || X >= W) continue;
+    const i = Y * W + X;
+    FB[i] = LITM[i] ? HI : Y < 44 ? W0 : (k % 4 === 0 ? W0 : W1);
+  }
+}
+
+// ---------- update: camera, poses, emitters ----------
+let camF = 0, camI = 0, dSX = 0, dSY = 0, lastSlot = -1, lastTurt = -1, dPitch = 0, dAim = 0, dReach = 0;
+const SCH_N = 14;
+function update() {
+  const t = gT;
+  camF = camAt(t); camI = Math.round(camF);
+  const slot = Math.floor(frame / 5);
+  if (slot !== lastSlot) {                                            // poses step at 12 fps
+    lastSlot = slot; diverAt(slot * 5 / 60);
+    dPitch = DVR.pitch; dAim = DVR.aim; dReach = DVR.reach;
+    drawDiver(dPitch, KICK[slot * 5], DVR.kickA, dAim, dReach);
+  }
+  diverAt(t);
+  dSX = Math.round(DVR.x - camF); dSY = Math.round(DVR.y);
+  turtleAt(t);
+  const tf = Math.floor(t * 5) % 6; if (tf !== lastTurt) { lastTurt = tf; drawTurtle(tf); }
+  // bubbles: exhale every 4 s, the chest when it opens, a steady trickle from a crack in the hull
+  const fe = frame % 240;
+  if (DVR.vis && fe < 26 && (fe & 3) === 0) { const h = hash(frame * 7 + 1); emitBubble(camI + dSX + REGX + (h * 3 | 0) - 1, dSY + REGY, h < 0.2 ? 3 : h < 0.6 ? 2 : 1, 14 + h * 8, h * 6); }
+  if (t >= T_OPEN && t < T_OPEN + 1.6 && (frame % 3) === 0) { const h = hash(frame * 13 + 5); emitBubble(CHEST_X - 5 + h * 11, CHEST_Y - 8, h < 0.3 ? 2 : 1, 10 + h * 10, h * 6); }
+  if ((frame % 120) === 0) emitBubble(458, gunwale(458) - 2, 1, 12, frame * 0.1);
+  if ((frame % 120) === 60) emitBubble(612, SANDY[612] - 1, 2, 10, 1.3);
+  stepBubbles();
+}
+
+// ---------- render ----------
+function blitLayer(buf, bw, ox, mark) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) {
+    const s = y * bw + ox, d = y * W;
+    for (let x = 0; x < W; x++) { const v = buf[s + x]; if (v !== CLEAR) { FB[d + x] = v; if (mark) SOLID[d + x] = 1; } }
+  }
+}
+function drawChestLid(cam) {
+  const lid = lidAt(gT); if (lid <= 0) return;
+  target(FB, W, H, -cam, 0);
+  const x0 = CHEST_X - 7, x1 = CHEST_X + 6, top = CHEST_Y - 7, lh = Math.round(lid * 6);
+  for (let y = top; y <= top + 1; y++) hline(x0, x1, y, WD3);
+  for (let y = top - lh; y < top; y++) { hline(x0 + 1, x1 - 1, y, y === top - lh ? WD0 : WD1); px(x0 + 3, y, GD2); px(x1 - 3, y, GD2); }   // lid swung up behind
+  for (let x = x0 + 1; x < x1; x++) {                                  // a heap of coins, domed above the rim once the lid is up
+    const hgt = lid > 0.5 ? Math.round(2.2 * Math.sqrt(Math.max(0, 1 - ((x - CHEST_X + 0.5) / 6.5) * ((x - CHEST_X + 0.5) / 6.5)))) : 0;
+    px(x, top + 1, ((x * 3) & 3) ? GD2 : GD1);                        // dark-shifted: the torch lifts the gold to its full colour
+    for (let k = 0; k <= hgt; k++) px(x, top - k, (x + k) % 3 === 0 ? GD1 : GD2);
+  }
+}
+function render() {
+  FB.set(BG); SOLID.fill(0); LITM.fill(0);
+  surfaceBand(camF);
+  blitLayer(FAR, FARW, Math.round(camF * P_FAR), 0);
+  blitLayer(MID, MIDW, Math.round(camF * P_MID), 0);
+  target(FB, W, H, -Math.round(camF * P_MID), 0);
+  for (let i = 0; i < MKN; i++) kelp(MKX[i], IMG_BOT, 70 + (i * 23) % 40, i * 1.9, 5, MD1, MD1, MD0, 2, 8);
+  jellies(camF);
+  shafts(camF);
+  blitLayer(PLAY, WW, camI, 1);
+  caustics(camI);
+  drawChestLid(camI);
+  target(FB, W, H, -camI, 0);
+  for (let i = 0; i < KELP_N; i++) kelp(KX[i], SANDY[KX[i]] + 1, KH[i], KPH[i], 6, KP2, KP1, KP0, 2, 7);
+  // fish: a silver school on a periodic path, and the orange fish that dart out of the hull
+  const t = gT, scx = 330 + 230 * Math.sin(TAU * gT / LOOP + 0.4), scy = 60 + 10 * Math.sin(TAU * 3 * gT / LOOP), vcx = Math.cos(TAU * gT / LOOP + 0.4);
+  target(FB, W, H, 0, 0);
+  for (let k = 0; k < SCH_N; k++) {
+    const a = TAU * 8 * gT / LOOP + k * 0.9, x = scx + 14 * Math.sin(a) + (k % 5) * 5 - 10, y = scy + 5 * Math.sin(TAU * 6 * gT / LOOP + k * 1.7) + (k % 4) * 3 - 5;
+    fish(Math.round(x - camF), Math.round(y), vcx * 230 + 14 * 8 * Math.cos(a) > 0 ? 1 : -1, HI, RK0, frame / 5 + k);
+  }
+  for (let k = 0; k < 5; k++) {
+    const tau = t - T_DART - k * 0.18; if (tau < 0 || tau > 9) continue;
+    const x = BRX - 2 - (58 * tau - 2.4 * tau * tau) + k * 2, y = BRY + 3 - 22 * (1 - Math.exp(-tau)) + 3 * Math.sin(tau * 3 + k) - k * 2;
+    fish(Math.round(x - camF), Math.round(y), -1, CO0, CO1, frame / 4 + k);
+  }
+  if (TUR.vis) { const sx = Math.round(TUR.x - camF), sy = Math.round(TUR.y); if (sx > -30 && sx < W + 30) blitLit(TBUF, TBW, TBH, sx - TAX, sy - TAY, false, CLEAR, CLEAR, W0, CLEAR, 0, 2, SHADE, 0, LIGHT); }
+  // the diver, lit from above; the torch beam is laid down first so it never lights its owner
+  if (DVR.vis && dSX > -45 && dSX < W + 45) {
+    const tx = dSX + TIPX, ty = dSY + TIPY;
+    torchBeam(tx, ty, dAim);
+    blitLit(DBUF, DBW, DBH, dSX - DAX, dSY - DAY, false, CLEAR, CLEAR, W0, CLEAR, 0, 2, SHADE, 0, LIGHT);
+    target(FB, W, H, 0, 0);
+    glow(tx + 0.5, ty + 0.5, 4, 4, TORCH, 12);
+    px(Math.round(tx), Math.round(ty), TC0); px(Math.round(tx - Math.cos(dAim)), Math.round(ty - Math.sin(dAim)), TC1);
+    if (gT >= T_OPEN && gT < T_ASC) for (let k = 0; k < 3; k++) if (cyc(16, k * 2.1) > 0.55) px(CHEST_X - 4 + k * 4 - camI, CHEST_Y - 7 + (k & 1), HI);
+  }
+  drawBubbles(camI);
+  snow(camF);
+  blitLayer(FG, FGW, Math.round(camF * P_FG), 0);
+  target(FB, W, H, -Math.round(camF * P_FG), 0);
+  for (let i = 0; i < 4; i++) kelp(FKX[i], IMG_BOT + 4, FKH[i], i * 2.3, 8, K1, K1, K1, 3, 9);
+  applyVignette(SHADE); frameBars(K0);
+}
+function bake() {
+  bakeBG(); bakeFar(); bakeMid(); bakePlay(); bakeFG(); bakeCaustics(); buildVignette(2);
+  for (let y = 0; y < H; y++) if (y < IMG_TOP || y >= IMG_BOT) for (let x = 0; x < W; x++) BG[y * W + x] = K0;
+}
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

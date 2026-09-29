@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge at Dusk</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+
+/* ==========================================================================
+   TEST 3 - ISOMETRIC PROJECTION: "Forge at Dusk"   (built twice: still + loop)
+   Resolved options (non-defaults marked *):
+     OUTPUT_MODE still* / loop · STILL_MOMENT auto (hammer strike, sparks mid-flight) · EXPORT png-1x+4x*
+     LOOP_SECONDS 24* · RESOLUTION 320x180 · FRAME letterbox-2.0* · WORLD_W 1.5 · WORLD_H 1.5*
+     PROJECTION isometric* · TRAVEL none* · ENVIRONMENT exterior · ERA historical*
+     SETTING a blacksmith's lean-to on a grassy rise at the edge of a village, floating diorama*
+     TIME blue-hour* · WEATHER clear · ATMOSPHERE light* · SKY plain-ramp + stars*
+     LIGHT_STYLE mixed* · KEY sky (cool, from NW)* · PRACTICALS forge fire (warm), lantern (warm)*
+     FLICKER fire* · SHAFTS off* · SHADOWS short* · RIM auto (warm from the forge, cool from the sky)
+     MOOD warm, industrious, quiet evening* · GRADE mixed warm/cool* · PALETTE 44
+     SUBJECT_COUNT 2* · S1 blacksmith, leather apron, hammer + tongs* · S2 cat asleep on the woodpile, still*
+     BEATS reheat at the forge (spans the loop point) -> walk to anvil -> 12 strikes -> walk back*
+     EFFECT_1 sparks (burst @ anvil)* · EFFECT_2 smoke (rise @ chimney)* · AMBIENT embers, fireflies, stars*
+     SHOTS slow drift across the diorama* · FOREGROUND bottom corners* · PRACTICAL_STRENGTH medium
+   ========================================================================== */
+const TITLE = 'Forge at Dusk';
+const W = 320, H = 180, IMG_TOP = 10, IMG_BOT = 170;            // letterbox 2.0 -> 160 px image
+const LOOP_FRAMES = 1440;                                       // 24 s
+const SEED = 11, OUTPUT_MODE = 'still', STILL_T = 7.1, DEBUG_KEYS = true, EXPORT_SCALES = [1, 4];
+const WW = 480, WH = 240;
+
+const PAL_HEX = [
+  '#0b0a12', '#1b1726',                                         // 0-1   near-blacks
+  '#1e2346', '#353a68', '#6b5b86', '#b86f78', '#e8a36c',        // 2-6   dusk sky: zenith -> horizon glow
+  '#e8e6ff',                                                    // 7     stars / moon
+  '#43406b', '#2d2b4d',                                         // 8-9   distant hills
+  '#7f9a5a', '#5a7a4f', '#3e5a48', '#2a3e3c',                   // 10-13 grass (dusk-cooled)
+  '#8a6a52', '#614a3f', '#3e3035',                              // 14-16 earth
+  '#a9a4a8', '#77737f', '#4b4858',                              // 17-19 stone
+  '#b07a4c', '#7a5238', '#4a3329',                              // 20-22 timber
+  '#6d6f80', '#3f4050',                                         // 23-24 iron
+  '#fff2c2', '#ffc350', '#f07a2a', '#b2402a', '#5e2a2e',        // 25-29 fire: white-hot -> ember
+  '#e7b08c', '#b87a60', '#7a4b45',                              // 30-32 skin
+  '#e3d9c6', '#a79f99',                                         // 33-34 shirt
+  '#8e5b3a', '#5c3a2c',                                         // 35-36 leather apron
+  '#3b3a4a', '#4a3230',                                         // 37-38 trousers, hair/beard
+  '#c9c2bf', '#8a8290',                                         // 39-40 grey cat
+  '#8f8aa0', '#5f5b73',                                         // 41-42 smoke
+  '#e9ff8a'                                                     // 43    firefly
+];
+const K0 = 0, K1 = 1, S0 = 2, S1 = 3, S2 = 4, S3 = 5, S4 = 6, STAR = 7, HL0 = 8, HL1 = 9,
+      GR0 = 10, GR1 = 11, GR2 = 12, GR3 = 13, DT0 = 14, DT1 = 15, DT2 = 16, SN0 = 17, SN1 = 18, SN2 = 19,
+      WD0 = 20, WD1 = 21, WD2 = 22, IR0 = 23, IR1 = 24, F0 = 25, F1 = 26, F2 = 27, F3 = 28, F4 = 29,
+      SK0 = 30, SK1 = 31, SK2 = 32, SH0 = 33, SH1 = 34, AP0 = 35, AP1 = 36, TRS = 37, HR = 38, CT0 = 39, CT1 = 40,
+      SM0 = 41, SM1 = 42, FF = 43;
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+
+// ---------- remap tables ----------
+const SHADE = makeLUT([S4, S3, S3, S2, S2, S1, S1, S0, S0, K1, STAR, SN0, HL0, HL1, HL1, K1,
+  GR0, GR1, GR1, GR2, GR2, GR3, GR3, K1, DT0, DT1, DT1, DT2, DT2, K1, SN0, SN1, SN1, SN2, SN2, K1,
+  WD0, WD1, WD1, WD2, WD2, K1, IR0, IR1, IR1, K1, F0, F1, F1, F2, F2, F3, F3, F4, F4, K1,
+  SK0, SK1, SK1, SK2, SK2, WD2, SH0, SH1, SH1, SN2, AP0, AP1, AP1, WD2, TRS, K1, HR, K1,
+  CT0, CT1, CT1, SN2, SM0, SM1, SM1, S1, FF, GR0, K1, K0]);
+const LIGHT = makeLUT([K1, SN2, S0, S1, S1, S2, S2, S3, S3, S4, HL1, HL0, GR3, GR2, GR2, GR1, GR1, GR0,
+  DT2, DT1, DT1, DT0, SN2, SN1, SN1, SN0, WD2, WD1, WD1, WD0, IR1, IR0, F4, F3, F3, F2, F2, F1, F1, F0,
+  SK2, SK1, SK1, SK0, SH1, SH0, AP1, AP0, CT1, CT0, SM1, SM0]);
+// firelight, first step: brighten within each material's own ramp (grass stays grass)
+const LIGHT_F = makeLUT([K1, WD2, GR3, GR2, GR2, GR1, GR1, GR0, DT2, DT1, DT1, DT0, DT0, WD0, SN2, SN1, SN1, SN0, SN0, SH0,
+  WD2, WD1, WD1, WD0, IR1, IR0, IR0, SN0, SK2, SK1, SK1, SK0, SH1, SH0, AP1, AP0, TRS, SN2, HR, WD2, CT1, CT0, SM1, SM0, F4, F3, F3, F2]);
+// firelight, core step only (PRACTICAL_STRENGTH medium): the warm shift toward timber/ember tones
+const LIGHT_FW = makeLUT([K1, DT2, SN2, WD2, SN1, WD1, SN0, DT0, GR3, DT2, GR2, DT1, GR1, WD1, GR0, WD0,
+  DT2, WD1, DT1, WD0, DT0, F1, WD2, WD1, WD1, WD0, WD0, F1, IR1, F4, IR0, F3, F4, F3, F3, F2, F2, F1,
+  SK2, SK1, SK1, SK0, SH1, SH0, SH0, F0, AP1, AP0, AP0, F2, TRS, DT2, HR, WD2, CT1, CT0, CT0, SH0,
+  SM1, F4, SM0, F3, HL1, F4, HL0, F3]);
+const SMOKEL = makeLUT([S0, SM1, S1, SM1, S2, SM0, S3, SM0, S4, SM0, HL1, SM1, HL0, SM1, STAR, SM0, K1, SM1]);
+
+// ---------- isometric helpers (2:1; i runs right-down, j runs left-down, z up in pixels) ----------
+const OX = 240, OY = 60, TWH = 16, THH = 8;
+function isx(i, j) { return OX + (i - j) * TWH; }
+function isy(i, j, z) { return OY + (i + j) * THH - z; }
+function isoTop(i0, j0, wi, wj, z, c) {
+  quad(isx(i0, j0), isy(i0, j0, z), isx(i0 + wi, j0), isy(i0 + wi, j0, z), isx(i0 + wi, j0 + wj), isy(i0 + wi, j0 + wj, z), isx(i0, j0 + wj), isy(i0, j0 + wj, z), c);
+}
+function faceL(i0, j, wi, z0, h, c) {                     // face on the plane j (facing down-left)
+  quad(isx(i0, j), isy(i0, j, z0), isx(i0 + wi, j), isy(i0 + wi, j, z0), isx(i0 + wi, j), isy(i0 + wi, j, z0 + h), isx(i0, j), isy(i0, j, z0 + h), c);
+}
+function faceR(i, j0, wj, z0, h, c) {                     // face on the plane i (facing down-right)
+  quad(isx(i, j0), isy(i, j0, z0), isx(i, j0 + wj), isy(i, j0 + wj, z0), isx(i, j0 + wj), isy(i, j0 + wj, z0 + h), isx(i, j0), isy(i, j0, z0 + h), c);
+}
+// Box with three-face shading: top lit, left face one step down, right face two steps down, lit edges.
+function isoBox(i0, j0, wi, wj, z0, h, c) {
+  faceL(i0, j0 + wj, wi, z0, h, SHADE[c]);
+  faceR(i0 + wi, j0, wj, z0, h, SHADE[SHADE[c]]);
+  isoTop(i0, j0, wi, wj, z0 + h, c);
+  line(isx(i0, j0 + wj), isy(i0, j0 + wj, z0 + h), isx(i0 + wi, j0 + wj), isy(i0 + wi, j0 + wj, z0 + h), LIGHT[c]);
+  line(isx(i0 + wi, j0 + wj), isy(i0 + wi, j0 + wj, z0 + h), isx(i0 + wi, j0 + wj), isy(i0 + wi, j0 + wj, z0), SHADE[c]);
+}
+function courses(i0, j0, wi, wj, z0, h, step, left, c) {   // mortar courses along a face
+  for (let z = z0 + step; z < z0 + h; z += step) {
+    if (left) line(isx(i0, j0 + wj), isy(i0, j0 + wj, z), isx(i0 + wi, j0 + wj), isy(i0 + wi, j0 + wj, z), c);
+    else line(isx(i0 + wi, j0), isy(i0 + wi, j0, z), isx(i0 + wi, j0 + wj), isy(i0 + wi, j0 + wj, z), c);
+  }
+}
+function isoShadow(i0, j0, wi, wj, h) {                   // short sky-light shadow toward SE + contact darkening
+  const dx = h * 0.45, dy = h * 0.2;
+  for (let k = 0; k <= 4; k++) {
+    const f = k / 4;
+    const ax = isx(i0, j0) + dx * f, ay = isy(i0, j0, 0) + dy * f;
+    quadRemap(ax, ay, isx(i0 + wi, j0) + dx * f, isy(i0 + wi, j0, 0) + dy * f,
+      isx(i0 + wi, j0 + wj) + dx * f, isy(i0 + wi, j0 + wj, 0) + dy * f, isx(i0, j0 + wj) + dx * f, isy(i0, j0 + wj, 0) + dy * f, 14 - k * 2);
+  }
+}
+const SHM = new Uint8Array(WW * WH);
+function quadRemap(ax, ay, bx, by, cx, cy, dx, dy, lvl) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    if (x < 0 || y < 0 || x >= WW || y >= WH) continue;
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y), e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) { const i = y * WW + x; if (lvl > SHM[i]) SHM[i] = lvl; }
+  }
+}
+function applyShadowMask(buf) {
+  for (let y = 0; y < WH; y++) for (let x = 0; x < WW; x++) {
+    const i = y * WW + x; if (SHM[i] > bay(x, y) && buf[i] !== CLEAR) buf[i] = SHADE[buf[i]];
+  }
+  SHM.fill(0);
+}
+
+// ---------- backdrop: dusk ramp, stars, moon, two hill silhouettes (parallax) ----------
+const HILL_A = new Int16Array(W + 200), HILL_B = new Int16Array(W + 200);
+for (let x = 0; x < W + 200; x++) {
+  HILL_A[x] = ri(118 + 8 * Math.sin(x * 0.021 + 0.7) + 4 * Math.sin(x * 0.057 + 1.9));
+  HILL_B[x] = ri(130 + 6 * Math.sin(x * 0.033 + 2.4) + 3 * Math.sin(x * 0.09));
+}
+const STAR_N = 34, STX = new Int16Array(STAR_N), STY = new Int16Array(STAR_N);
+for (let k = 0; k < STAR_N; k++) { STX[k] = (rnd() * W) | 0; STY[k] = IMG_TOP + ((rnd() * 60) | 0); }
+const SKY_STOPS = new Uint8Array([S0, S1, S2, S3, S4]);
+function drawBackdrop(cam, camy) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) {
+    const t = clamp((y - IMG_TOP + camy * 0.2) / 125, 0, 0.999) * 4, b = Math.floor(t), f = t - b;
+    const a = SKY_STOPS[b], c = SKY_STOPS[Math.min(4, b + 1)], lv = (f - 0.3) * 26;
+    for (let x = 0; x < W; x++) FB[y * W + x] = lv > bay(x, y) ? c : a;
+  }
+  for (let k = 0; k < STAR_N; k++) if (hash(k * 97 + (frame >> 4)) > 0.2) px(STX[k], STY[k] - ri(camy * 0.1), hash(k * 31 + (frame >> 3)) > 0.85 ? STAR : S2);
+  const mx = 44 - ri(cam * 0.1), my = 30 - ri(camy * 0.1);                   // thin crescent moon
+  for (let y = -5; y <= 5; y++) for (let x = -5; x <= 5; x++) if (x * x + y * y <= 25 && (x - 2) * (x - 2) + (y - 1) * (y - 1) > 20) px(mx + x, my + y, STAR);
+  const ha = ri(cam * 0.2), hb = ri(cam * 0.35), vy = ri(camy * 0.3);
+  for (let x = 0; x < W; x++) {
+    for (let y = HILL_A[x + ha] - vy; y < IMG_BOT; y++) px(x, y, (y === HILL_A[x + ha] - vy && bay(x, y) < 6) ? S2 : HL0);
+    for (let y = HILL_B[x + hb] - vy; y < IMG_BOT; y++) px(x, y, HL1);
+  }
+}
+
+// ---------- diorama bake: BACK (behind the smith), MID (anvil, between his body and arms), FRONT ----------
+const BACK = new Uint8Array(WW * WH), MID = new Uint8Array(WW * WH), FRONT = new Uint8Array(WW * WH);
+const FORGE_I = 4, FORGE_J = 1.5, FORGE_Z = 16;                             // centre of the fire bed
+const FIRE_X = isx(FORGE_I, FORGE_J), FIRE_Y = isy(FORGE_I, FORGE_J, FORGE_Z);
+const LANT_X = isx(6.8, 2.1), LANT_Y = isy(6.8, 2.1, 32);
+const ANVIL_X = isx(4.12, 3.55), ANVIL_Y = isy(4.12, 3.55, 13);           // strike point on the anvil face
+function bake() {
+  BACK.fill(CLEAR); MID.fill(CLEAR); FRONT.fill(CLEAR);
+  target(BACK, WW, WH);
+  // platform sides: earth strata with embedded stones, hanging grass lip
+  faceL(0, 9, 9, -28, 28, DT1); faceR(9, 0, 9, -28, 28, DT2);
+  for (let k = 0; k < 3; k++) { courses(0, 0, 9, 9, -28, 28, 9, true, k ? DT2 : DT0); }
+  for (let k = 0; k < 40; k++) {
+    const left = k & 1, u = rnd() * 9, z = -26 + rnd() * 22;
+    const x = left ? isx(u, 9) : isx(9, u), y = left ? isy(u, 9, z) : isy(9, u, z);
+    ellipse(x, y, 1.6 + rnd(), 1, left ? SN1 : SN2);
+  }
+  for (let k = 0; k < 60; k++) { const u = rnd() * 9, left = k & 1; const x = left ? isx(u, 9) : isx(9, u), y = left ? isy(u, 9, 0) : isy(9, u, 0); vline(ri(x), ri(y), ri(y) + 1 + ((rnd() * 4) | 0), left ? GR2 : GR3); }
+  // ground: grass with texture, flagstone floor, stepping stones
+  isoTop(0, 0, 9, 9, 0, GR1);
+  for (let y = 0; y < WH; y++) for (let x = 0; x < WW; x++) {
+    const i = y * WW + x; if (BACK[i] !== GR1) continue;
+    const n = Math.sin(x * 0.09 + 1.1) * Math.sin(y * 0.13 + 0.3) + (hash(x * 13 + y * 7) - 0.5) * 0.8;
+    BACK[i] = n > 0.45 ? GR0 : n < -0.5 ? GR2 : GR1;
+  }
+  isoTop(2, 0.6, 5, 4.6, 0, SN1);
+  for (let a = 2; a <= 7.01; a += 0.5) line(isx(a, 0.6), isy(a, 0.6, 0), isx(a, 5.2), isy(a, 5.2, 0), SN2);
+  for (let b = 0.6; b <= 5.21; b += 0.5) line(isx(2, b), isy(2, b, 0), isx(7, b), isy(7, b, 0), SN2);
+  for (let k = 0; k < 90; k++) { const a = 2 + rnd() * 5, b = 0.6 + rnd() * 4.6; px(ri(isx(a, b)), ri(isy(a, b, 0)), rnd() < 0.5 ? SN0 : SN2); }
+  for (let k = 0; k < 4; k++) { const a = 8.4 - k * 0.45, b = 5.8 - k * 0.2; ellipse(isx(a, b), isy(a, b, 0), 5, 2.4, SN1); hline(ri(isx(a, b)) - 3, ri(isx(a, b)) + 2, ri(isy(a, b, 0)) - 1, SN0); }
+  for (let k = 0; k < 170; k++) {                                          // tufts + wildflowers on the grass
+    const a = rnd() * 9, b = rnd() * 9; if (a > 1.8 && a < 7.2 && b > 0.4 && b < 5.4) continue;
+    const x = ri(isx(a, b)), y = ri(isy(a, b, 0));
+    if (k % 6 === 0) px(x, y - 1, k % 12 === 0 ? SH0 : S3); else { px(x, y, GR2); px(x, y - 1, GR0); px(x + 1, y - 1, GR1); }
+  }
+  // static shadows first (so the objects cover their own bases)
+  isoShadow(1.6, 0.4, 0.4, 5, 40); isoShadow(2, 0.6, 5, 0.4, 40); isoShadow(3, 1, 2, 1, 16); isoShadow(6.1, 1.3, 0.8, 0.8, 14);
+  isoShadow(7.6, 0.6, 0.4, 0.4, 26); isoShadow(2.05, 2.05, 0.2, 0.2, 40); isoShadow(6.75, 2.05, 0.2, 0.2, 40);
+  applyShadowMask(BACK);
+  // workshop corner: side wall (i = 2) and back wall (j = 1) in coursed stone
+  isoBox(1.6, 0.4, 0.4, 4.8, 0, 40, SN1); courses(1.6, 0.4, 0.4, 4.8, 0, 40, 5, false, SN2);
+  isoBox(2, 0.6, 5, 0.4, 0, 40, SN0); courses(2, 0.6, 5, 0.4, 0, 40, 5, true, SN2);
+  for (let k = 0; k < 7; k++) for (let z = 2; z < 40; z += 10) {            // staggered joints
+    const a = 2.3 + k * 0.7 + ((z / 10) & 1) * 0.35; vline(ri(isx(a, 1.0)), ri(isy(a, 1.0, z + 5)), ri(isy(a, 1.0, z)), SN2);
+  }
+  // tool rack on the back wall
+  line(isx(5.4, 1.0), isy(5.4, 1.0, 30), isx(6.9, 1.0), isy(6.9, 1.0, 30), WD2);
+  for (let k = 0; k < 5; k++) { const a = 5.6 + k * 0.28, x = isx(a, 1.0), y = isy(a, 1.0, 30); vline(ri(x), ri(y) + 1, ri(y) + 9 + (k & 1) * 3, k & 1 ? IR0 : WD1); if (!(k & 1)) rect(ri(x) - 1, ri(y) + 9, 3, 2, IR1); }
+  // forge: stone hearth, dark ash mouth, coal bed (flames are drawn live)
+  isoBox(3, 1, 2, 1, 0, FORGE_Z, SN1); courses(3, 1, 2, 1, 0, FORGE_Z, 4, true, SN2);
+  faceL(3.6, 2, 0.8, 2, 7, K1); faceL(3.7, 2, 0.6, 3, 4, F4);
+  isoTop(3.2, 1.15, 1.6, 0.7, FORGE_Z, F4);
+  // chimney through the roof
+  isoBox(3.6, 0.6, 0.8, 0.4, 0, 78, SN1); courses(3.6, 0.6, 0.8, 0.4, 16, 62, 6, true, SN2);
+  // bellows, water barrel, sapling, fence
+  isoBox(5.15, 1.2, 0.7, 0.7, 0, 4, WD2); isoBox(5.1, 1.15, 0.8, 0.8, 4, 6, AP1); isoTop(5.1, 1.15, 0.8, 0.8, 10, WD1);
+  isoBox(6.1, 1.3, 0.8, 0.8, 0, 14, WD1); courses(6.1, 1.3, 0.8, 0.8, 0, 14, 5, true, IR1); courses(6.1, 1.3, 0.8, 0.8, 0, 14, 5, false, IR1);
+  isoTop(6.2, 1.4, 0.6, 0.6, 14, S1); px(ri(isx(6.45, 1.6)), ri(isy(6.45, 1.6, 14)), S3);
+  isoBox(7.75, 0.65, 0.3, 0.3, 0, 26, WD1);
+  for (let k = 0; k < 9; k++) { const a = rnd() * TAU, r = 5 + rnd() * 6; ellipse(isx(7.9, 0.8) + Math.cos(a) * r, isy(7.9, 0.8, 34) + Math.sin(a) * r * 0.7, 5, 4, k & 1 ? GR2 : GR1); }
+  for (let k = 0; k < 14; k++) px(ri(isx(7.9, 0.8) - 6 + rnd() * 8), ri(isy(7.9, 0.8, 38) + rnd() * 8), GR0);
+  for (let b = 0.4; b < 8.8; b += 1.4) isoBox(8.7, b, 0.15, 0.15, 0, 11, WD1);
+  line(isx(8.78, 0.4), isy(8.78, 0.4, 9), isx(8.78, 8.6), isy(8.78, 8.6, 9), WD0);
+  line(isx(8.78, 0.4), isy(8.78, 0.4, 5), isx(8.78, 8.6), isy(8.78, 8.6, 5), WD2);
+  // roof posts, lean-to roof (planks), lantern bracket
+  isoBox(2.05, 2.05, 0.2, 0.2, 0, 40, WD1); isoBox(6.75, 2.05, 0.2, 0.2, 0, 40, WD1);
+  quad(isx(1.8, 0.4), isy(1.8, 0.4, 52), isx(7.2, 0.4), isy(7.2, 0.4, 52), isx(7.2, 2.3), isy(7.2, 2.3, 41), isx(1.8, 2.3), isy(1.8, 2.3, 41), WD2);
+  for (let a = 2.1; a < 7.2; a += 0.3) line(isx(a, 0.4), isy(a, 0.4, 52), isx(a, 2.3), isy(a, 2.3, 41), WD1);
+  faceL(1.8, 2.3, 5.4, 38, 3, WD0); faceR(7.2, 0.4, 1.9, 39, 13, WD1);
+  isoBox(3.6, 0.6, 0.8, 0.4, 52, 26, SN1); courses(3.6, 0.6, 0.8, 0.4, 52, 26, 6, true, SN2);   // chimney above the roof
+  isoTop(3.65, 0.62, 0.7, 0.36, 78, K1);
+  rect(ri(LANT_X) - 2, ri(LANT_Y) - 3, 5, 6, IR1); rect(ri(LANT_X) - 1, ri(LANT_Y) - 2, 3, 4, F1); vline(ri(LANT_X), ri(LANT_Y) - 7, ri(LANT_Y) - 4, IR1);
+  // MID: stump + anvil (sits between the smith's body and his arms)
+  target(MID, WW, WH);
+  isoBox(3.85, 3.3, 0.5, 0.5, 0, 8, WD1); isoTop(3.9, 3.35, 0.4, 0.4, 8, WD0); px(ri(isx(4.1, 3.55)), ri(isy(4.1, 3.55, 8)), WD2);
+  isoBox(3.82, 3.42, 0.62, 0.26, 8, 3, IR1); isoBox(3.78, 3.38, 0.7, 0.34, 11, 3, IR0);
+  quad(isx(4.48, 3.45), isy(4.48, 3.45, 14), isx(4.75, 3.55), isy(4.75, 3.55, 13), isx(4.48, 3.65), isy(4.48, 3.65, 12), isx(4.48, 3.55), isy(4.48, 3.55, 12), IR0);
+  // FRONT: woodpile (the cat sleeps on it) and front-lip tufts
+  target(FRONT, WW, WH);
+  isoBox(1.0, 5.4, 1.6, 1.0, 0, 12, WD2);
+  for (let r = 0; r < 3; r++) for (let k = 0; k < 5; k++) {
+    const a = 1.12 + k * 0.3 + (r & 1) * 0.15, x = isx(a, 6.4), y = isy(a, 6.4, 2 + r * 4);
+    ellipse(x, y, 2.2, 1.9, WD0); px(ri(x), ri(y), WD1);
+  }
+  for (let k = 0; k < 30; k++) { const u = rnd() * 9, left = k & 1; const x = ri(left ? isx(u, 8.95) : isx(8.95, u)), y = ri(left ? isy(u, 8.95, 0) : isy(8.95, u, 0)); px(x, y - 1, GR0); px(x, y - 2, GR1); px(x + 1, y - 1, GR2); }
+  buildVignette(2);
+  target(FB, W, H);
+}
+
+// ---------- timeline (24 s): reheat spans the loop point so the bar's heat is continuous ----------
+// R: 18.6 -> 24 -> 3.0 (next loop) reheat at the forge · W1 3.0-4.2 walk to anvil · H 4.2-17.4 12 strikes · W2 17.4-18.6 walk back
+const T_W1 = 3.0, T_H = 4.2, T_W2 = 17.4, T_R = 18.6, STRIKE_P = 1.1;
+const PA_I = 3.4, PA_J = 3.55, PB_I = 3.55, PB_J = 2.72;                    // at the anvil / at the forge
+const SM = { i: PA_I, j: PA_J, face: 0, f: 0, mov: false, hammer: 0, heat: 1, strike: false, reach: 0 };   // face 0 = SE, 1 = NE
+let prevCycle = -1;
+function smithPose(t) {
+  SM.mov = false; SM.hammer = 0; SM.strike = false; SM.reach = 0;
+  if (t < T_W1 || t >= T_R) {                                               // reheating at the forge
+    const tr = t >= T_R ? t - T_R : t + (LOOP - T_R);
+    SM.i = PB_I; SM.j = PB_J; SM.face = 1; SM.heat = 0.4 + 0.6 * tr / (LOOP - T_R + T_W1);
+    SM.reach = 0.5 + 0.5 * cyc(27, 0);                                     // working the bar in the coals
+  } else if (t < T_H) {
+    const u = easeSine((t - T_W1) / (T_H - T_W1));
+    SM.i = lerp(PB_I, PA_I, u); SM.j = lerp(PB_J, PA_J, u); SM.face = 0; SM.mov = true; SM.heat = 1;
+    SM.f = Math.floor((t - T_W1) * 8) & 3;
+  } else if (t < T_W2) {                                                    // hammering, the bar cools
+    SM.i = PA_I; SM.j = PA_J; SM.face = 0; SM.heat = 1 - 0.6 * (t - T_H) / (T_W2 - T_H);
+    const c = ((t - T_H) % STRIKE_P) / STRIKE_P;
+    SM.hammer = c < 0.5 ? easeSine(c / 0.5) : c < 0.58 ? 1 - (c - 0.5) / 0.08 : 0.12 * Math.sin((c - 0.58) / 0.42 * Math.PI);
+    SM.strike = c >= 0.55 && c < 0.6;
+  } else {
+    const u = easeSine((t - T_W2) / (T_R - T_W2));
+    SM.i = lerp(PA_I, PB_I, u); SM.j = lerp(PA_J, PB_J, u); SM.face = 1; SM.mov = true; SM.heat = 0.4;
+    SM.f = Math.floor((t - T_W2) * 8) & 3;
+  }
+}
+function strikeIndex(t) { return t >= T_H && t < T_W2 ? Math.floor((t - T_H) / STRIKE_P) : -1; }
+
+NORIM[IR0] = NORIM[IR1] = 1;                                               // iron keeps its own highlight (no fire rim)
+// ---------- blacksmith: body and arms in separate buffers so the anvil can sit between them ----------
+const BW = 40, BH = 46, BAX = 18, BAY = 42;
+const SBODY = new Uint8Array(BW * BH), SARMS = new Uint8Array(BW * BH);
+let HOTX = 0, HOTY = 0, HAMX = 0, HAMY = 0;                                 // hot bar + hammer head (sprite-local)
+function thick(x0, y0, x1, y1, c) { line(x0, y0, x1, y1, c); line(x0 + 1, y0, x1 + 1, y1, c); }
+function drawSmith() {
+  SBODY.fill(CLEAR); SARMS.fill(CLEAR);
+  target(SBODY, BW, BH, BAX, BAY);
+  const step = SM.mov ? (SM.f & 1) : 0, b = SM.mov && (SM.f & 1) ? -1 : 0;
+  // legs + boots (stance apart; alternate when stepping)
+  rect(-4, -8 + b, 2, 8 - (step ? 1 : 0), TRS); rect(1, -8 + b, 2, 8 - (step ? 0 : 1) * (SM.mov ? 1 : 0), TRS);
+  hline(-5, -2, step ? -1 : 0, K1); hline(1, 4, SM.mov && !step ? -1 : 0, K1);
+  if (SM.face === 0) {                                                      // SE: front three-quarter
+    for (let y = -20; y <= -9; y++) hline(-5, 4, y + b, SH0);
+    for (let y = -17; y <= -5; y++) { const w = y > -8 ? 3 : 3; hline(-3, w, y + b, AP0); }
+    vline(-3, -17 + b, -5 + b, AP1); line(-3, -17 + b, -1, -20 + b, AP1); line(3, -17 + b, 1, -20 + b, AP1);
+    hline(-5, 4, -9 + b, AP1);
+    for (let y = -26; y <= -21; y++) hline(-2, 2, y + b, SK0);
+    hline(-2, 2, -26 + b, HR); hline(-2, 1, -25 + b, HR); vline(-3, -25 + b, -22 + b, HR);
+    px(1, -24 + b, K1); px(3, -23 + b, SK0);
+    hline(-1, 3, -21 + b, HR); hline(0, 3, -20 + b, HR); px(1, -19 + b, HR);
+  } else {                                                                  // NE: back three-quarter
+    for (let y = -20; y <= -8; y++) hline(-5, 4, y + b, y > -12 ? SH1 : SH0);
+    line(-4, -19 + b, 3, -12 + b, AP1); line(3, -19 + b, -4, -12 + b, AP1); hline(-1, 1, -12 + b, AP1); px(-2, -11 + b, AP1); px(2, -11 + b, AP1);
+    for (let y = -26; y <= -21; y++) hline(-2, 2, y + b, HR);
+    px(2, -23 + b, SK1); px(-3, -24 + b, HR);
+  }
+  // arms + tools
+  target(SARMS, BW, BH, BAX, BAY);
+  if (SM.face === 0) {
+    const a = SM.hammer;                                                    // 0 at rest/strike, 1 raised overhead
+    const hx = ri(lerp(8, 2, a)), hy = ri(lerp(-12, -30, a)) + b, ex = ri(lerp(7, 6, a)), ey = ri(lerp(-16, -24, a)) + b;
+    thick(4, -19 + b, ex, ey, SH0); thick(ex, ey, hx, hy, SK0);
+    const dx = a > 0.5 ? -1 : 1, dy = a > 0.5 ? -1 : 1;                     // hammer handle continues past the hand
+    line(hx, hy, hx + 4 * dx, hy + 4 * dy, WD0);
+    HAMX = hx + 4 * dx; HAMY = hy + 4 * dy;
+    rect(HAMX - 2, HAMY - 1, 4, 3, IR1); hline(HAMX - 2, HAMX + 1, HAMY - 1, IR0); px(HAMX - 2, HAMY - 1, SN0);   // metal head with a cool glint
+    thick(-4, -19 + b, -3, -14 + b, SH0); thick(-3, -14 + b, 4, -12 + b, SK0);   // tongs hand
+    line(5, -12 + b, 10, -9 + b, IR1);
+    HOTX = 10; HOTY = -9 + b;
+  } else {
+    const r = ri(SM.reach * 2);
+    thick(3, -19 + b, 8 + r, -23 + b, SK0); thick(-4, -18 + b, 6 + r, -22 + b, SK0);
+    line(9 + r, -23 + b, 14 + r, -27 + b, IR1);
+    HOTX = 14 + r; HOTY = -27 + b; HAMX = -99;
+  }
+}
+// ---------- the cat asleep on the woodpile: breathing + tail-tip twitch ----------
+const CAT_X = isx(1.75, 5.85), CAT_Y = isy(1.75, 5.85, 12);
+function drawCat(cam, camy) {
+  const x = ri(CAT_X) - cam, y = ri(CAT_Y) - camy + IMG_TOP, breath = cyc(8, 0) > 0.3 ? 1 : 0;
+  hline(x - 4, x + 3, y, CT1); hline(x - 4, x + 4, y - 1, CT0); hline(x - 3, x + 3, y - 2 - breath, CT0); if (breath) hline(x - 3, x + 3, y - 2, CT0);
+  px(x - 1, y - 1, CT1); px(x + 1, y - 2 - breath, CT1);
+  px(x + 3, y - 3 - breath, CT0); px(x + 4, y - 3 - breath, CT0); px(x + 3, y - 4 - breath, CT0); px(x + 5, y - 4 - breath, CT1);
+  px(x + 4, y - 2, K1);
+  const twitch = hash(Math.floor(gT * 1.25) * 7) < 0.3 && (frame & 8);
+  hline(x - 5, x - 3, y, CT1); px(x - 5, y - 1 - (twitch ? 1 : 0), CT0);
+}
+
+// ---------- particles (world coords): sparks, embers, smoke ----------
+const PN = 260, P_SPARK = 1, P_EMBER = 2, P_SMOKE = 3;
+const pX = new Float32Array(PN), pY = new Float32Array(PN), pVX = new Float32Array(PN), pVY = new Float32Array(PN);
+const pAge = new Float32Array(PN), pLife = new Float32Array(PN), pG = new Float32Array(PN), pType = new Uint8Array(PN), pB = new Uint8Array(PN);
+let pNext = 0;
+function spawn(type, x, y, vx, vy, life, g) {
+  for (let n = 0; n < PN; n++) {
+    const i = (pNext + n) % PN; if (pType[i] !== 0) continue;
+    pType[i] = type; pX[i] = x; pY[i] = y; pVX[i] = vx; pVY[i] = vy; pAge[i] = 0; pLife[i] = life; pG[i] = g; pB[i] = 0;
+    pNext = (i + 1) % PN; return;
+  }
+}
+const CHIM_X = isx(4, 0.8), CHIM_Y = isy(4, 0.8, 79);
+let fireI = 1, camX = 100, camY = 30, lastStrike = -1;
+function fireIntensity(t) {                                   // FLICKER fire (+ bellows puffs while reheating)
+  let f = 1 + 0.08 * cyc(37, 0.3) + 0.05 * cyc(61, 1.1) + 0.06 * (hash(frame >> 2) - 0.5);
+  if (t < T_W1 || t >= T_R) f += 0.3 + 0.25 * Math.max(0, cyc(27, 0));
+  return f;
+}
+function update() {
+  smithPose(gT);
+  fireI = fireIntensity(gT);
+  // loop mode: slow drift across the diorama (whole cycles); still mode frames the action
+  camX = OUTPUT_MODE === 'still' ? 100 : 98 + 14 * cyc(1, 0);
+  camY = OUTPUT_MODE === 'still' ? 30 : 30 + 7 * cyc(1, 1.2);
+  // EFFECT_1: sparks burst on each hammer strike
+  const si = strikeIndex(gT);
+  if (SM.strike && si !== lastStrike) {
+    lastStrike = si;
+    for (let k = 0; k < 18; k++) spawn(P_SPARK, ANVIL_X + 1, ANVIL_Y, (rnd() - 0.35) * 70, -20 - rnd() * 55, 0.35 + rnd() * 0.4, 190);
+  }
+  if (si < 0) lastStrike = -1;
+  if (frame % (fireI > 1.2 ? 5 : 9) === 0) spawn(P_EMBER, FIRE_X + (rnd() - 0.5) * 14, FIRE_Y - 2, (rnd() - 0.5) * 6, -12 - rnd() * 10, 1.2 + rnd(), -2);
+  if (frame % 16 === 0) spawn(P_SMOKE, CHIM_X + (rnd() - 0.5) * 3, CHIM_Y, 2.5 + rnd() * 1.5, -6 - rnd() * 2, 4.2, 0);
+  for (let i = 0; i < PN; i++) {
+    const ty = pType[i]; if (ty === 0) continue;
+    pAge[i] += STEP; pVY[i] += pG[i] * STEP;
+    if (ty === P_EMBER) pVX[i] += Math.sin(pAge[i] * 5 + i) * 10 * STEP;
+    pX[i] += pVX[i] * STEP; pY[i] += pVY[i] * STEP;
+    if (ty === P_SPARK && !pB[i] && pY[i] > ANVIL_Y + 13) { pY[i] = ANVIL_Y + 13; pVY[i] *= -0.3; pVX[i] *= 0.5; pB[i] = 1; }   // ON_LAND: bounce on the flagstones
+    if (pAge[i] >= pLife[i]) pType[i] = 0;
+  }
+}
+
+// ---------- compositing (world layers -> frame; DIOF marks diorama pixels for the light pools) ----------
+const DIOF = new Uint8Array(W * H);
+function composite(buf, cam, camy) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) {
+    const wy = y - IMG_TOP + camy; if (wy < 0 || wy >= WH) continue;
+    for (let x = 0; x < W; x++) {
+      const wx = x + cam; if (wx < 0 || wx >= WW) continue;
+      const v = buf[wy * WW + wx]; if (v !== CLEAR) { FB[y * W + x] = v; DIOF[y * W + x] = 1; }
+    }
+  }
+}
+function markSprite(buf, ox, oy) {
+  for (let y = 0; y < BH; y++) for (let x = 0; x < BW; x++) {
+    if (buf[y * BW + x] === CLEAR) continue;
+    const X = ox + x, Y = oy + y; if (X >= 0 && X < W && Y >= IMG_TOP && Y < IMG_BOT) DIOF[Y * W + X] = 1;
+  }
+}
+function pool(cx, cy, rx, ry, lut, lutCore, maxLvl) {        // light pool on diorama pixels only (never the sky)
+  const x0 = Math.max(0, Math.floor(cx - rx)), x1 = Math.min(W - 1, Math.ceil(cx + rx));
+  const y0 = Math.max(IMG_TOP, Math.floor(cy - ry)), y1 = Math.min(IMG_BOT - 1, Math.ceil(cy + ry));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = y * W + x; if (!DIOF[i]) continue;
+    const u = (x - cx) / rx, v = (y - cy) / ry, d = u * u + v * v; if (d >= 1) continue;
+    const l = (1 - Math.sqrt(d)) * maxLvl;
+    if (l > bay(x, y)) FB[i] = lut[FB[i]];
+    if (l - 16 > bay(x + 2, y + 1)) FB[i] = lutCore[FB[i]];
+  }
+}
+function drawFire(cam, camy) {
+  const fx = FIRE_X - cam, fy = FIRE_Y - camy + IMG_TOP;
+  for (let y = -3; y <= 3; y++) for (let x = -12; x <= 12; x++) {           // glowing coal bed
+    if ((x * x) / 144 + (y * y) / 9 > 1) continue;
+    const hsh = hash((x + 20) * 31 + (y + 9) * 7 + (frame >> 2) * 131);
+    px(ri(fx) + x, ri(fy) + y, hsh < 0.2 * fireI ? F1 : hsh < 0.55 ? F2 : F3);
+  }
+  for (let k = 0; k < 7; k++) {                                              // flame tongues
+    const x = ri(fx) - 9 + k * 3, h = ri((3 + 5 * hash(k * 17 + (frame >> 2))) * fireI * (1 - Math.abs(k - 3) * 0.12));
+    for (let j = 0; j < h; j++) px(x + (j > h / 2 && (k + (frame >> 3)) & 1 ? 1 : 0), ri(fy) - 1 - j, j < h * 0.35 ? F0 : j < h * 0.7 ? F1 : F2);
+  }
+}
+function drawParticles(cam, camy) {
+  for (let i = 0; i < PN; i++) {
+    const ty = pType[i]; if (ty === 0) continue;
+    const x = ri(pX[i]) - cam, y = ri(pY[i]) - camy + IMG_TOP, a = pAge[i] / pLife[i];
+    if (ty === P_SPARK) { const c = a < 0.25 ? F0 : a < 0.55 ? F1 : a < 0.8 ? F2 : F3; px(x, y, c); if (a < 0.4) px(x - Math.sign(pVX[i]), y + 1, F2); }
+    else if (ty === P_EMBER) px(x, y, a < 0.3 ? F1 : a < 0.6 ? F2 : a < 0.85 ? F3 : F4);
+    else { const r = 1.5 + pAge[i] * 1.5; glow(x, y, r, r * 0.8, SMOKEL, 11 * (1 - a)); }
+  }
+}
+const FF_N = 8;
+function drawFireflies(cam, camy) {                          // periodic Lissajous paths over the grass
+  for (let k = 0; k < FF_N; k++) {
+    const side = k < 4, a = side ? 1.2 + k * 0.5 : 7.2 + (k - 4) * 0.4, b = side ? 7.6 - k * 0.3 : 5 + (k - 4) * 0.8;
+    const wx = isx(a, b) + 10 * cyc(2 + (k % 3), k), wy = isy(a, b, 8) + 5 * cyc(3 + (k % 2), k * 1.7);
+    if (cyc(6 + k, k * 2.3) < 0.2) continue;
+    const x = ri(wx) - cam, y = ri(wy) - camy + IMG_TOP;
+    px(x, y, FF); remapAt(x - 1, y, LIGHT); remapAt(x + 1, y, LIGHT); remapAt(x, y - 1, LIGHT);
+  }
+}
+function drawForeground() {                                  // near-black out-of-focus grass in the bottom corners (parallax 1.4)
+  const off = ri((camX - 98) * 0.4);
+  for (let k = 0; k < 16; k++) {
+    const base = (k < 8 ? 6 + k * 6 : W - 58 + (k - 8) * 7) - off, h = 10 + ((k * 7) % 5) * 4, lean = ((k * 5) % 3) - 1;
+    for (let j = 0; j <= h; j++) {
+      const f = j / h, x = base + ri(lean * f * f * 5) + (f > 0.6 ? (cyc(4, k) > 0.4 ? 1 : 0) : 0), w = f < 0.4 ? 3 : f < 0.8 ? 2 : 1;
+      for (let q = 0; q < w; q++) px(x + q, IMG_BOT - j, K1);
+      if (((x + w + j) & 1) === 0) px(x + w, IMG_BOT - j, K1);
+    }
+  }
+}
+
+// ---------- frame composition ----------
+function render() {
+  const cam = ri(camX), camy = ri(camY);
+  target(FB, W, H);
+  DIOF.fill(0);
+  drawBackdrop(cam, camy);
+  composite(BACK, cam, camy);
+  drawFire(cam, camy);
+  drawSmith();
+  target(FB, W, H);
+  const sx = ri(isx(SM.i, SM.j)) - cam, sy = ri(isy(SM.i, SM.j, 0)) - camy + IMG_TOP, ox = sx - BAX, oy = sy - BAY;
+  glow(sx + 2, sy, 7, 2.5, SHADE, 14);                                        // contact shadow
+  // warm rim from the forge (up-right of him), cool sky rim on top, dark outline on the shadow side
+  blitLit(SBODY, BW, BH, ox, oy, false, F2, CLEAR, S2, K1, -1, 2, SHADE, 1, LIGHT); markSprite(SBODY, ox, oy);
+  composite(MID, cam, camy);
+  blitLit(SARMS, BW, BH, ox, oy, false, F2, CLEAR, S2, K1, -1, 1, SHADE, 0, LIGHT); markSprite(SARMS, ox, oy);
+  const hot = SM.heat > 0.8 ? F0 : SM.heat > 0.6 ? F1 : F2;                   // hot bar (emissive, never shaded)
+  hline(ox + BAX + HOTX, ox + BAX + HOTX + 2, oy + BAY + HOTY, hot); px(ox + BAX + HOTX + 3, oy + BAY + HOTY, F2);
+  composite(FRONT, cam, camy);
+  drawCat(cam, camy);
+  // PRACTICAL_STRENGTH medium: reach <= ~35% of the frame height, second (warm) step only in the core
+  const fr = Math.min(fireI, 1.25);
+  pool(FIRE_X - cam, FIRE_Y - camy + IMG_TOP - 4, 56 * fr, 28 * fr, LIGHT_F, LIGHT_FW, 18 * fireI);
+  pool(LANT_X - cam, LANT_Y - camy + IMG_TOP, 26, 15, LIGHT_F, LIGHT_F, 11 + 2 * cyc(29, 0));
+  if (SM.heat > 0.6 && SM.face === 0) glow(ox + BAX + HOTX + 1, oy + BAY + HOTY, 5, 3, LIGHT_F, 8 * SM.heat);
+  drawParticles(cam, camy);
+  drawFireflies(cam, camy);
+  drawForeground();
+  applyVignette(SHADE);
+  frameBars(K0);
+}
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

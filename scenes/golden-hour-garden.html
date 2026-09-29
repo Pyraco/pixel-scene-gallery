@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Golden Hour Garden</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+/* ==========================================================================
+   GOLDEN HOUR GARDEN - a procedural pixel-art cutscene
+   Everything is drawn into an 8-bit indexed framebuffer (320x180) from a
+   fixed palette, expanded to RGBA once per frame and blitted at an integer
+   scale. No gradients or anti-aliasing: every soft falloff is Bayer
+   dithering, and every light/shadow effect is a palette-index remap (LUT).
+   ========================================================================== */
+
+// ---------- 1. Frame, world and timing constants ----------
+const W = 320, H = 180;
+const IMG_TOP = 23, IMG_BOT = 157;             // 2.39:1 image rows [23,157) = 134 px
+const WORLD_W = 480, CAM_MAX = WORLD_W - W;    // yard layer width and camera range
+const STEP = 1 / 60;
+const LOOP_FRAMES = 4800;                      // 80 s loop, multiple of 32 so shimmer loops too
+const LOOP = LOOP_FRAMES / 60;
+const TAU = Math.PI * 2;
+const BREEZE_P = LOOP / 16;                    // 5 s breeze cycle, divides the loop
+const HAIR_P = LOOP / 25;                      // 3.2 s hair flutter cycle
+
+// ---------- 2. Palette (43 colours, teal-orange golden-hour grade) ----------
+const PAL_HEX = [
+  '#0c0a12', '#1c1726',                                   // 0-1   near-blacks
+  '#e89a70', '#f3bf7c', '#c9a0a4', '#8c8bb4',             // 2-5   sky: peach, gold, dusty rose, lavender-blue
+  '#fff5dc', '#ffdc96',                                   // 6-7   sun disc, sun glow
+  '#c595a0', '#957894', '#5e4f73',                        // 8-10  far hills, mid hills, treeline
+  '#c8c46a', '#8ea457', '#587e55', '#2f5552',             // 11-14 greens: warm highlight -> cool teal shadow
+  '#cfa472', '#8f6448', '#513631',                        // 15-17 soil: dry, mid, wet
+  '#f7a8b8', '#d4667f', '#ffe27c', '#e6a83c', '#a58fd4', '#f7ecd2', // 18-23 flowers
+  '#efd6aa', '#cc8d58', '#7b5347', '#3a2b3a',             // 24-27 cottage cream, sunlit wood, shadow wood, trim
+  '#f4c49c', '#d99570', '#99615a',                        // 28-30 skin
+  '#eac46a', '#a77e41', '#a3b88d', '#5d7c73', '#f0e8d6',  // 31-35 hat, hat shadow, dress, dress shadow, apron
+  '#cdd0d6', '#8c91a1', '#4c5068',                        // 36-38 watering can
+  '#f8fdff', '#a2e2ea', '#4d8fc4',                        // 39-41 water
+  '#ffc451'                                               // 42    hot rim light
+];
+const K0 = 0, K1 = 1, SKY0 = 2, SKY1 = 3, SKY2 = 4, SKY3 = 5, SUN0 = 6, SUN1 = 7,
+      HAZ0 = 8, HAZ1 = 9, HAZ2 = 10, G0 = 11, G1 = 12, G2 = 13, G3 = 14,
+      SOIL0 = 15, SOIL1 = 16, SOIL2 = 17, PINK0 = 18, PINK1 = 19, YEL0 = 20, YEL1 = 21,
+      LAV = 22, CREAM = 23, WCREAM = 24, WOOD0 = 25, WOOD1 = 26, TRIM = 27,
+      SKIN0 = 28, SKIN1 = 29, SKIN2 = 30, HAT0 = 31, HAT1 = 32, DRESS0 = 33, DRESS1 = 34,
+      APRON = 35, CAN0 = 36, CAN1 = 37, CAN2 = 38, WAT0 = 39, WAT1 = 40, WAT2 = 41, RIM = 42;
+const NP = PAL_HEX.length, CLEAR = 255;
+const PAL32 = new Uint32Array(NP);             // ABGR for little-endian ImageData
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+
+// Palette remaps: SHADE = one step cooler/darker, LIGHT = one step warmer/brighter.
+const SHADE = new Uint8Array(NP), LIGHT = new Uint8Array(NP);
+for (let i = 0; i < NP; i++) { SHADE[i] = i; LIGHT[i] = i; }
+function mapPairs(lut, p) { for (let i = 0; i < p.length; i += 2) lut[p[i]] = p[i + 1]; }
+mapPairs(SHADE, [
+  G0, G1, G1, G2, G2, G3, G3, K1, SOIL0, SOIL1, SOIL1, SOIL2, SOIL2, TRIM,
+  SKY0, HAZ0, SKY1, SKY0, SKY2, SKY3, SKY3, HAZ1, SUN0, SUN1, SUN1, SKY1,
+  HAZ0, HAZ1, HAZ1, HAZ2, HAZ2, TRIM,
+  PINK0, PINK1, PINK1, WOOD1, YEL0, YEL1, YEL1, HAT1, LAV, HAZ1, CREAM, HAZ0,
+  WCREAM, HAZ0, WOOD0, WOOD1, WOOD1, TRIM, TRIM, K1, K1, K0,
+  SKIN0, SKIN1, SKIN1, SKIN2, SKIN2, WOOD1, HAT0, HAT1, HAT1, WOOD1,
+  DRESS0, DRESS1, DRESS1, G3, APRON, CAN0, CAN0, CAN1, CAN1, CAN2, CAN2, TRIM,
+  WAT0, WAT1, WAT1, WAT2, WAT2, CAN2, RIM, HAT0
+]);
+mapPairs(LIGHT, [
+  G3, G2, G2, G1, G1, G0, SOIL2, SOIL1, SOIL1, SOIL0, SOIL0, WCREAM,
+  SKY3, SKY2, SKY2, SKY1, SKY1, SUN1, SKY0, SKY1, SUN1, SUN0,
+  HAZ2, HAZ1, HAZ1, HAZ0, HAZ0, SKY0,
+  WOOD1, WOOD0, WOOD0, HAT0, TRIM, WOOD1, WCREAM, CREAM, CREAM, SUN0,
+  PINK1, PINK0, YEL1, YEL0, CAN2, CAN1, CAN1, CAN0, K1, TRIM,
+  DRESS1, DRESS0, SKIN1, SKIN0, HAT1, HAT0
+]);
+
+// ---------- 3. Indexed framebuffers and drawing primitives ----------
+const FB = new Uint8Array(W * H);                 // final frame
+const YARD = new Uint8Array(WORLD_W * H).fill(CLEAR); // pre-rendered static yard layer
+let TB = FB, TW = W;                              // current draw target
+function target(buf, w) { TB = buf; TW = w; }
+
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+
+function px(x, y, c) {
+  if (x < 0 || x >= TW || y < IMG_TOP || y >= IMG_BOT) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < IMG_TOP ? IMG_TOP : y, y1 = y + h > IMG_BOT ? IMG_BOT : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { rect(x, y0, 1, y1 - y0 + 1, c); }
+// Dithered fill: colour b where level (0..16) beats the Bayer threshold, else a.
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  if (x < 0 || x >= TW || y < IMG_TOP || y >= IMG_BOT) return;
+  const i = y * TW + x; if (TB[i] !== CLEAR) TB[i] = lut[TB[i]];
+}
+function getAt(x, y) {
+  if (x < 0 || x >= TW || y < IMG_TOP || y >= IMG_BOT) return CLEAR;
+  return TB[y * TW + x];
+}
+
+// ---------- 4. Math helpers (no allocation) ----------
+let rs = 0x2f6e2b1;
+function rnd() {                                // mulberry32, deterministic
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+
+// World geometry shared by every layer.
+function pathY(x) { return 128 + Math.floor(x * 0.018); }          // sloping stone path (feet line)
+function crestY(x) { return 109 + Math.floor(x * 0.008); }         // back edge of the yard
+const BED_X = [168, 268, 368], BED_W = 40;
+const BED_Y = new Int16Array(3);                                    // back rim row of each bed
+for (let b = 0; b < 3; b++) BED_Y[b] = pathY(BED_X[b] + 20) + 3;
+const HOME_X = 86;
+const SUN_WX = 238, SUN_Y = 86;                                     // sun in sky-layer space
+
+// Breeze: returns 0 or 1 pixel of sway for a given world x (periodic with the loop).
+let gT = 0;                                                          // current loop time (s)
+function breeze(x) {
+  const g = 0.65 + 0.35 * Math.sin(TAU * gT * 3 / LOOP);
+  return Math.sin(TAU * gT / BREEZE_P - x * 0.035) * g > 0.3 ? 1 : 0;
+}
+
+// ---------- 5. Background: sky, sun, clouds, hills, treeline ----------
+// Sky rows: 4 bands (lavender-blue top -> dusty rose -> gold -> peach horizon),
+// solid in the middle of each band, Bayer-dithered only across the transitions.
+const SKY_A = new Uint8Array(H), SKY_B = new Uint8Array(H), SKY_L = new Uint8Array(H);
+{
+  const sy = [IMG_TOP, 48, 72, 94], sc = [SKY3, SKY2, SKY1, SKY0];
+  for (let y = 0; y < H; y++) {
+    let a = SKY0, b = SKY0, l = 0;
+    if (y < sy[0]) { a = b = SKY3; }
+    for (let k = 0; k < 3; k++) {
+      if (y >= sy[k] && y < sy[k + 1]) {
+        const f = (y - sy[k]) / (sy[k + 1] - sy[k]);
+        a = sc[k]; b = sc[k + 1]; l = clamp(ri((f - 0.3) / 0.6 * 16), 0, 16);
+      }
+    }
+    SKY_A[y] = a; SKY_B[y] = b; SKY_L[y] = l;
+  }
+}
+function drawSky() {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) {
+    const a = SKY_A[y], b = SKY_B[y], l = SKY_L[y], o = y * W;
+    for (let x = 0; x < W; x++) FB[o + x] = l > bay(x, y) ? b : a;
+  }
+}
+
+let sunX = 0;                                    // screen x of the sun this frame
+function drawSun(cam) {
+  sunX = ri(SUN_WX - cam * 0.1);
+  for (let y = SUN_Y - 40; y <= SUN_Y + 30; y++) {
+    for (let x = sunX - 52; x <= sunX + 52; x++) {
+      const dx = x - sunX, dy = (y - SUN_Y) * 1.3;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < 52 && (1 - d / 52) * 17 > bay(x, y)) remapAt(x, y, LIGHT);   // wide glow
+      if (d < 20 && (1 - d / 20) * 18 > bay(x + 1, y)) remapAt(x, y, LIGHT); // hot core
+    }
+  }
+  for (let y = SUN_Y - 9; y <= SUN_Y + 9; y++) {
+    for (let x = sunX - 9; x <= sunX + 9; x++) {
+      const dx = x - sunX, dy = y - SUN_Y, d2 = dx * dx + dy * dy;
+      if (d2 <= 30) px(x, y, SUN0);
+      else if (d2 <= 52) px(x, y, SUN1);
+      else if (d2 <= 70 && ((x + y) & 1)) px(x, y, SUN1);
+    }
+  }
+}
+
+// Clouds are pre-baked sprites: cool bodies, warm undersides lit by the low sun,
+// dithered tops that melt into the sky.
+function bakeCloud(ells, w, h, body) {
+  const m = new Uint8Array(w * h), s = new Uint8Array(w * h).fill(CLEAR);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    for (let e = 0; e < ells.length; e += 4) {
+      const ex = (x - ells[e]) / ells[e + 2], ey = (y - ells[e + 1]) / ells[e + 3];
+      if (ex * ex + ey * ey <= 1) { m[y * w + x] = 1; break; }
+    }
+  }
+  const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? 0 : m[y * w + x];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (!at(x, y)) continue;
+    let c = body;
+    if (!at(x, y + 1)) c = SUN1;
+    else if (!at(x, y + 2)) c = SKY1;
+    if (!at(x, y - 1) && bay(x, y) < 8) continue;
+    if ((!at(x - 1, y) || !at(x + 1, y)) && bay(x, y) < 5) continue;
+    s[y * w + x] = c;
+  }
+  return s;
+}
+const CLOUDS = [
+  { spr: bakeCloud([30, 5, 24, 3.2, 46, 4, 14, 3, 16, 6, 14, 2.4, 58, 6, 10, 2], 74, 10, SKY2), w: 74, h: 10, bx: 70, by: 38, ph: 0.3 },
+  { spr: bakeCloud([22, 4, 18, 2.6, 36, 5, 12, 2.2, 10, 5, 10, 2], 52, 9, SKY3), w: 52, h: 9, bx: 250, by: 58, ph: 2.1 }
+];
+function drawClouds(cam) {
+  for (let k = 0; k < CLOUDS.length; k++) {
+    const c = CLOUDS[k];
+    const ox = ri(c.bx + 16 * Math.sin(TAU * gT / LOOP + c.ph) - cam * 0.1);
+    for (let y = 0; y < c.h; y++) for (let x = 0; x < c.w; x++) {
+      const v = c.spr[y * c.w + x];
+      if (v !== CLEAR) px(ox + x, c.by + y, v);
+    }
+  }
+}
+
+// Hill profiles (one top-row per layer column), built once.
+const FAR_F = 0.25, MID_F = 0.33, TREE_F = 0.45;
+const FAR_N = W + Math.ceil(CAM_MAX * FAR_F) + 2;
+const MID_N = W + Math.ceil(CAM_MAX * MID_F) + 2;
+const TREE_N = W + Math.ceil(CAM_MAX * TREE_F) + 2;
+const farTop = new Int16Array(FAR_N), midTop = new Int16Array(MID_N), treeTop = new Int16Array(TREE_N);
+for (let x = 0; x < FAR_N; x++)
+  farTop[x] = ri(91 + 4 * Math.sin(x * 0.019 + 0.6) + 2.5 * Math.sin(x * 0.051 + 2.1) + 1.2 * Math.sin(x * 0.13 + 0.3));
+for (let x = 0; x < MID_N; x++)
+  midTop[x] = ri(99 + 3 * Math.sin(x * 0.027 + 1.7) + 2 * Math.sin(x * 0.07 + 0.4));
+{
+  for (let x = 0; x < TREE_N; x++) treeTop[x] = 107;
+  let cx = -4;
+  while (cx < TREE_N + 6) {
+    const conifer = rnd() < 0.18;
+    if (conifer) {
+      const peak = 95 + ri(rnd() * 4);
+      for (let dx = -5; dx <= 5; dx++) {
+        const x = cx + dx; if (x < 0 || x >= TREE_N) continue;
+        const t = peak + ri(Math.abs(dx) * 1.7); if (t < treeTop[x]) treeTop[x] = t;
+      }
+      cx += 6 + ri(rnd() * 4);
+    } else {
+      const r = 3 + rnd() * 3.5, cy = 104 - r * 0.4 + rnd() * 2;
+      for (let dx = -Math.ceil(r); dx <= Math.ceil(r); dx++) {
+        const x = cx + dx; if (x < 0 || x >= TREE_N || Math.abs(dx) > r) continue;
+        const t = ri(cy - Math.sqrt(r * r - dx * dx)); if (t < treeTop[x]) treeTop[x] = t;
+      }
+      cx += 3 + ri(rnd() * 5);
+    }
+  }
+}
+function drawHills(cam) {
+  const fo = ri(cam * FAR_F), mo = ri(cam * MID_F), to = ri(cam * TREE_F);
+  for (let x = 0; x < W; x++) {
+    // far ridge: palest violet, sun-kissed crest near the sun, misty base
+    let top = farTop[x + fo];
+    for (let y = top; y < 116; y++) {
+      let c = HAZ0;
+      if (y === top) c = Math.abs(x - sunX) < 34 ? SUN1 : (bay(x, y) < 8 ? SKY0 : HAZ0);
+      else if (y > top + 4 && clamp((y - top - 4) * 2, 0, 9) > bay(x, y)) c = SKY0;
+      px(x, y, c);
+    }
+    // mid ridge
+    top = midTop[x + mo];
+    for (let y = top; y < 118; y++) {
+      let c = HAZ1;
+      if (y === top && Math.abs(x - sunX) < 60 && bay(x, y) < 10) c = HAZ0;
+      else if (y > top + 3 && clamp((y - top - 3) * 2, 0, 8) > bay(x, y)) c = HAZ0;
+      px(x, y, c);
+    }
+    // dark distant treeline, sparse warm glints along the crowns
+    top = treeTop[x + to];
+    for (let y = top; y < 120; y++) px(x, y, (y === top && bay(x, y) < 5) ? HAZ1 : HAZ2);
+  }
+}
+
+// ---------- 6. Static yard layer (baked once into YARD at world resolution) ----------
+// Long cool shadows: a point at height h above ground line `base` lands at
+// (x - 1.4h, base + 0.5h) - the low sun sits behind the scene, to the right.
+const SMASK = new Uint8Array(WORLD_W * H);
+function markShadow(x, y, lvl) {
+  if (x < 0 || x >= WORLD_W || y < IMG_TOP || y >= IMG_BOT) return;
+  const i = y * WORLD_W + x; if (lvl > SMASK[i]) SMASK[i] = lvl;
+}
+function castColumn(x, w, base, hmax, strength) {
+  for (let h = 0; h <= hmax; h++) {
+    const gx = x - ri(h * 1.4), gy = base + ri(h * 0.5);
+    const lvl = ri(strength * (1 - h / (hmax * 2.4)) * 16);
+    for (let xx = gx; xx <= gx + w; xx++) markShadow(xx, gy, lvl);
+  }
+}
+
+function buildYard() {
+  target(YARD, WORLD_W);
+  // -- grass: warm backlit crest, cooling toward the viewer
+  for (let x = 0; x < WORLD_W; x++) {
+    const top = crestY(x);
+    for (let y = top; y < IMG_BOT; y++) {
+      const dy = y - top;
+      let c;
+      if (dy === 0) c = G0;
+      else if (dy < 6) c = (dy * 3) > bay(x, y) ? G1 : G0;
+      else if (y < 138) c = G1;
+      else if (y < 150) c = ((y - 138) * 1.3) > bay(x, y) ? G2 : G1;
+      else c = ((y - 150) * 1.8) > bay(x, y) ? G3 : G2;
+      px(x, y, c);
+    }
+  }
+  // grass texture: short vertical strokes (dark on light ground, light on dark ground)
+  for (let n = 0; n < 2600; n++) {
+    const x = (rnd() * WORLD_W) | 0, top = crestY(x) + 3;
+    const y = top + ((rnd() * (IMG_BOT - top)) | 0);
+    const c = getAt(x, y);
+    if (c === G0 || c === G1) { px(x, y, G2); if (rnd() < 0.5) px(x, y - 1, c === G0 ? G1 : G2); }
+    else if (c === G2 || c === G3) { px(x, y, G1); }
+  }
+  // tiny wildflower specks in the lawn
+  for (let n = 0; n < 90; n++) {
+    const x = (rnd() * WORLD_W) | 0, y = crestY(x) + 4 + ((rnd() * 40) | 0);
+    const k = rnd();
+    px(x, y, k < 0.4 ? YEL0 : k < 0.7 ? CREAM : PINK0);
+  }
+  // -- worn dirt path band
+  for (let x = 36; x < WORLD_W; x++) {
+    const py = pathY(x);
+    for (let y = py - 2; y <= py + 2; y++) {
+      const edge = (y === py - 2 || y === py + 2);
+      if (edge && bay(x, y) < 8) continue;
+      const r = rnd();
+      px(x, y, r < 0.12 ? SOIL0 : r < 0.2 ? SOIL2 : SOIL1);
+    }
+  }
+  // -- stepping stones: warm lit tops, rose-grey faces, cool undersides
+  for (let x = 42; x < WORLD_W - 4;) {
+    const w = 4 + ((rnd() * 5) | 0), sy = pathY(x + (w >> 1)) - 1 - (rnd() < 0.4 ? 1 : 0);
+    hline(x + 1, x + w - 2, sy, WCREAM);
+    hline(x, x + w - 1, sy + 1, HAZ0);
+    hline(x + 1, x + w - 2, sy + 2, HAZ1);
+    px(x + w - 1, sy + 1, WCREAM);
+    x += w + 1 + ((rnd() * 2) | 0);
+  }
+  // -- cast shadows onto the ground (fence pickets, rails, raised beds)
+  for (let x = 102; x < WORLD_W; x += 5) castColumn(x, 2, crestY(x) + 5, 10, 0.85);
+  for (let x = 102; x < WORLD_W; x++) {
+    const base = crestY(x) + 5;
+    markShadow(x - 6, base + 2, 10); markShadow(x - 11, base + 4, 8);
+  }
+  for (let b = 0; b < 3; b++) {
+    const bb = BED_Y[b];
+    for (let x = BED_X[b]; x < BED_X[b] + BED_W; x += 2) castColumn(x, 2, bb + 10, 14, 0.9);
+  }
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < WORLD_W; x++) {
+    const i = y * WORLD_W + x;
+    if (SMASK[i] > bay(x, y) && YARD[i] !== CLEAR) YARD[i] = SHADE[YARD[i]];
+  }
+  // -- picket fence along the crest (backlit: shadowed faces, lit tips and sun-side edges)
+  for (let x = 102; x < WORLD_W; x++) {
+    const base = crestY(x) + 5;
+    px(x, base - 8, WOOD1); px(x, base - 4, WOOD1);
+    if (bay(x, base) < 4) px(x, base - 3, TRIM);
+  }
+  for (let x = 102; x < WORLD_W; x += 5) {
+    const base = crestY(x) + 5, post = ((x - 102) % 45) === 0;
+    const h = post ? 12 : 10;
+    vline(x, base - h, base - 1, WOOD1);
+    vline(x + 1, base - h, base - 1, WOOD1);
+    if (post) { vline(x + 2, base - h, base - 1, TRIM); hline(x, x + 2, base - h - 1, WOOD0); }
+    else { px(x, base - h - 1, WOOD0); px(x + 1, base - h, WOOD0); px(x + 1, base - h + 1, WOOD0); }
+    px(x, base - 1, TRIM); px(x + 1, base - 1, TRIM);
+  }
+  // -- raised bed boxes (soil rows are drawn live so they can get wet)
+  for (let b = 0; b < 3; b++) {
+    const bx = BED_X[b], bb = BED_Y[b];
+    hline(bx, bx + BED_W - 1, bb, WOOD1);
+    rect(bx, bb + 1, BED_W, 3, SOIL0);
+    hline(bx, bx + BED_W - 1, bb + 4, WOOD0);
+    rect(bx, bb + 5, BED_W, 5, WOOD1);
+    hline(bx, bx + BED_W - 1, bb + 7, TRIM);
+    hline(bx, bx + BED_W - 1, bb + 10, TRIM);
+    for (let n = 0; n < 14; n++) {                      // wood grain dashes
+      const gx = bx + 3 + ((rnd() * (BED_W - 6)) | 0), gy = bb + 5 + ((rnd() * 5) | 0);
+      if (gy !== bb + 7) { px(gx, gy, WOOD0); if (bay(gx, gy) < 8) px(gx + 1, gy, WOOD0); }
+    }
+    vline(bx, bb, bb + 10, TRIM); vline(bx + 1, bb + 1, bb + 9, WOOD1);
+    vline(bx + BED_W - 2, bb, bb + 9, WOOD1); vline(bx + BED_W - 1, bb, bb + 9, WOOD0);
+    px(bx + BED_W - 1, bb + 4, HAT0);
+    vline(bx, bb + 1, bb + 3, WOOD1); vline(bx + BED_W - 1, bb + 1, bb + 3, WOOD0);
+  }
+  buildCottage();
+  target(FB, W);
+}
+
+// Cottage corner: shingled roof with chimney, clapboard wall, window + window box,
+// door, porch step, stone foundation. The face is in soft shade (sun behind);
+// the sun-side corner and roof edge catch warm light.
+function buildCottage() {
+  const roofEdge = (y) => 97 - ri((54 - y) * 0.5);
+  // chimney (runs out of frame)
+  for (let y = 18; y <= 31; y++) for (let x = 26; x <= 36; x++) {
+    const mortar = (y % 3 === 0) || ((x + ((y / 3) | 0) * 3) % 6 === 0);
+    px(x, y, x === 36 ? WOOD0 : mortar ? WOOD1 : SOIL1);
+  }
+  // roof
+  for (let y = 30; y <= 54; y++) {
+    const e = roofEdge(y);
+    for (let x = 0; x <= e; x++) {
+      let c = WOOD1;
+      if (y % 3 === 0) c = TRIM;
+      else if ((x + ((y / 3) | 0) * 2) % 5 === 0) c = TRIM;
+      else if (y % 3 === 2 && bay(x, y) < 3) c = HAT1;
+      if (x >= e - 1) c = x === e ? HAT0 : WOOD0;
+      px(x, y, c);
+    }
+  }
+  for (let x = 0; x <= roofEdge(30); x++) { px(x, 30, WOOD0); if (bay(x, 29) < 6) px(x, 29, SUN1); }
+  // fascia / eave
+  hline(0, 98, 55, WOOD0); hline(0, 98, 56, WOOD1); hline(0, 98, 57, TRIM); px(98, 55, HAT0);
+  // clapboard wall
+  for (let y = 58; y <= 118; y++) for (let x = 0; x <= 91; x++) {
+    let c = ((y - 58) % 4 === 0) ? SOIL0 : WCREAM;
+    let lvl = 4 + (x < 64 ? ri((64 - x) / 64 * 8) : 0);        // soft shade, deeper to the left
+    if (y < 63) lvl = 16 - (y - 58) * 3;                        // eave shadow
+    if (lvl > bay(x, y)) c = SHADE[c];
+    px(x, y, c);
+  }
+  // sun-side corner board
+  for (let y = 58; y <= 118; y++) { px(88, y, WOOD1); px(89, y, WOOD0); px(90, y, WOOD0); px(91, y, SUN1); }
+  // window
+  rect(12, 70, 27, 23, CREAM);
+  for (let y = 72; y <= 90; y++) for (let x = 14; x <= 36; x++) {
+    const k = ((x - 14) + ri((y - 72) * 0.8)) % 24;
+    let c = TRIM;
+    if (k >= 4 && k <= 9) c = (k === 4 || k === 9) ? (bay(x, y) < 8 ? SKY0 : TRIM) : SKY1;
+    else if (k >= 14 && k <= 15) c = SKY0;
+    if (x <= 16) c = (x === 16) ? HAZ2 : HAZ1;                 // curtain edge
+    px(x, y, c);
+  }
+  vline(25, 72, 90, CREAM); hline(14, 36, 81, CREAM);
+  hline(12, 38, 70, WCREAM); vline(38, 70, 92, SUN1);
+  hline(10, 40, 93, WOOD0); hline(10, 40, 94, WOOD1);
+  // window box (foliage + blossoms drawn live so they sway)
+  rect(11, 95, 29, 5, WOOD0);
+  hline(11, 39, 95, SOIL2); hline(11, 39, 97, WOOD1); hline(11, 39, 100, TRIM);
+  vline(11, 95, 100, TRIM); vline(39, 96, 99, HAT0);
+  for (let y = 101; y <= 103; y++) for (let x = 11; x <= 39; x++) if (16 - (y - 101) * 5 > bay(x, y)) remapAt(x, y, SHADE);
+  // door
+  rect(50, 84, 22, 35, CREAM);
+  rect(52, 86, 18, 33, WOOD1);
+  for (let y = 86; y <= 118; y++) { px(56, y, TRIM); px(61, y, TRIM); px(65, y, TRIM); }
+  rect(55, 89, 12, 7, WOOD0);
+  rect(56, 90, 10, 5, TRIM);
+  px(58, 90, SKY1); px(57, 91, SKY1); px(62, 90, SKY0); px(61, 91, SKY0);
+  vline(61, 90, 94, WOOD0);
+  px(67, 103, YEL1); px(68, 103, HAT0);
+  hline(52, 69, 86, TRIM); for (let x = 52; x <= 69; x++) if (bay(x, 87) < 10) px(x, 87, TRIM);
+  vline(71, 84, 118, SUN1);
+  // stone foundation
+  for (let y = 119; y <= 124; y++) for (let x = 0; x <= 92; x++) {
+    let c = (((x + (y & 1) * 3) % 6) === 0 || y === 122) ? CAN2 : CAN1;
+    if (y === 119) c = CAN0;
+    if (x === 92) c = CAN0;
+    px(x, y, c);
+  }
+  // porch step
+  rect(46, 119, 32, 2, WCREAM);
+  rect(46, 121, 32, 4, HAZ0);
+  hline(46, 77, 125, HAZ1);
+  vline(77, 119, 124, SUN1);
+  hline(47, 76, 121, HAZ1);
+  // potted plant beside the door
+  rect(40, 118, 7, 7, WOOD0); hline(39, 47, 117, HAT0); rect(40, 122, 7, 3, WOOD1);
+  for (let y = 107; y <= 116; y++) for (let x = 38; x <= 48; x++) {
+    const dx = (x - 43) / 5.5, dy = (y - 112) / 5;
+    if (dx * dx + dy * dy <= 1) {
+      let c = bay(x, y) < 7 ? G2 : G1;
+      if (x >= 46 && bay(x, y) < 10) c = G0;
+      if (((x * 7 + y * 13) % 11) === 0) c = PINK0;
+      px(x, y, c);
+    }
+  }
+}
+
+// ---------- 7. Live midground: plants, grass tufts, wet soil ----------
+// Plants: 7 per bed + 5 in the window box. Types: 0 pink cosmos, 1 yellow daisy,
+// 2 lavender spikes, 3 cream cluster, 4 leafy greens.
+const PL_N = 26;
+const PL_X = new Int16Array(PL_N), PL_Y = new Int16Array(PL_N), PL_T = new Uint8Array(PL_N);
+const PL_H = new Uint8Array(PL_N), PL_BED = new Uint8Array(PL_N), PL_PERK = new Float32Array(PL_N);
+{
+  const offs = [4, 9, 14, 20, 25, 30, 35], hs = [11, 8, 10, 6, 4];
+  const types = [0, 4, 1, 2, 0, 3, 1,  2, 1, 3, 0, 2, 4, 0,  3, 0, 1, 3, 2, 0, 1];
+  let i = 0;
+  for (let b = 0; b < 3; b++) for (let k = 0; k < 7; k++, i++) {
+    PL_X[i] = BED_X[b] + offs[k] + ((rnd() * 2) | 0); PL_Y[i] = BED_Y[b] + 2;
+    PL_T[i] = types[i]; PL_H[i] = hs[types[i]] + ((rnd() * 2) | 0); PL_BED[i] = b;
+  }
+  const wb = [14, 19, 24, 30, 35], wt = [3, 0, 3, 0, 3];
+  for (let k = 0; k < 5; k++, i++) { PL_X[i] = wb[k]; PL_Y[i] = 95; PL_T[i] = wt[k]; PL_H[i] = 4; PL_BED[i] = 255; }
+}
+function drawPlant(i, cam) {
+  const wx = PL_X[i], x = wx - cam;
+  if (x < -6 || x > W + 6) return;
+  const root = PL_Y[i], h = PL_H[i], t = PL_T[i];
+  const sw = breeze(wx), up = PL_PERK[i] > 0.3 ? 1 : 0;
+  const top = root - h - up, mid = root - (h >> 1);
+  if (t === 0 || t === 1) {                         // stemmed flower
+    for (let y = root; y > top + 1; y--) px(x + (y < mid ? sw : 0), y, G2);
+    px(x - 1, root - 2, G1); px(x + 1, root - 4, G0); px(x - 1, root - 5, G1);
+    const cx = x + sw, cy = top + 1;
+    if (t === 0) {
+      px(cx, cy, YEL1); px(cx + 1, cy, PINK0); px(cx, cy - 1, PINK0); px(cx + 1, cy - 1, PINK0);
+      px(cx - 1, cy, PINK1); px(cx, cy + 1, PINK1); px(cx - 1, cy - 1, PINK0); px(cx + 1, cy + 1, PINK1);
+    } else {
+      px(cx - 1, cy, YEL0); px(cx + 1, cy, YEL0); px(cx, cy - 1, YEL0); px(cx, cy, YEL1); px(cx, cy + 1, YEL1);
+    }
+  } else if (t === 2) {                             // lavender: two spikes
+    for (let s = 0; s < 2; s++) {
+      const sx = x + s * 2, st = top + s * 2;
+      for (let y = root; y >= st; y--) {
+        const ox = y < mid ? sw : 0;
+        px(sx + ox, y, y < st + 4 ? ((y & 1) ? LAV : SKY3) : G2);
+      }
+    }
+    px(x + 1, root - 1, G1);
+  } else {                                          // mounds: cream cluster / leafy greens
+    const hw = t === 3 ? 3 : 3.5;
+    for (let y = root; y >= top; y--) {
+      const f = (root - y) / (h + 0.5), half = ri(hw * Math.sqrt(1 - f * f));
+      const ox = (y < mid ? sw : 0);
+      for (let dx = -half; dx <= half; dx++) {
+        let c = G1;
+        if (dx === half || y === top) c = G0;
+        else if (dx <= -half + 1 || y === root) c = G2;
+        if (t === 3 && ((dx * 5 + y * 3 + wx) & 3) === 0 && y < root) c = CREAM;
+        px(x + dx + ox, y, c);
+      }
+    }
+  }
+}
+
+// Grass tufts (sway at their tips). Sorted into two depth passes around the character.
+const TU_N = 230;
+const TU_X = new Int16Array(TU_N), TU_Y = new Int16Array(TU_N), TU_H = new Uint8Array(TU_N);
+{
+  let n = 0;
+  while (n < TU_N) {
+    const x = (rnd() * WORLD_W) | 0, y = crestY(x) + 3 + ((rnd() * (IMG_BOT - crestY(x) - 2)) | 0);
+    if (Math.abs(y - pathY(x)) <= 3) continue;
+    if (x < 100 && y < 127) continue;
+    let inBed = false;
+    for (let b = 0; b < 3; b++) if (x >= BED_X[b] - 2 && x < BED_X[b] + BED_W + 2 && y >= BED_Y[b] - 1 && y <= BED_Y[b] + 11) inBed = true;
+    if (inBed) continue;
+    TU_X[n] = x; TU_Y[n] = y; TU_H[n] = y > 140 ? 3 + ((rnd() * 2) | 0) : 2 + ((rnd() * 2) | 0); n++;
+  }
+}
+function drawTufts(cam, feetY, front) {
+  for (let i = 0; i < TU_N; i++) {
+    const y = TU_Y[i];
+    if ((y > feetY) !== front) continue;
+    const x = TU_X[i] - cam;
+    if (x < -2 || x > W + 2) continue;
+    const h = TU_H[i], sw = breeze(TU_X[i]), dark = y > 146;
+    for (let k = 0; k < h; k++) {
+      const c = k === h - 1 ? G0 : (dark ? G2 : G1);
+      const o = k === h - 1 ? sw : 0;
+      px(x + o, y - k, c); px(x - 1, y - k + 1, dark ? G3 : G2);
+      if (k < h - 1) px(x + 1 + (k === h - 2 ? sw : 0), y - k - 1, c);
+    }
+  }
+}
+
+// Soil wetness per bed column (0 dry .. 1 soaked), dries slowly over the loop.
+const WET = new Float32Array(3 * BED_W);
+function drawSoil(cam) {
+  for (let b = 0; b < 3; b++) {
+    const bb = BED_Y[b];
+    for (let c = 2; c < BED_W - 2; c++) {
+      const wx = BED_X[b] + c, x = wx - cam;
+      if (x < 0 || x >= W) continue;
+      const w = WET[b * BED_W + c];
+      for (let r = 0; r < 3; r++) {
+        const y = bb + 1 + r;
+        let a, d, lvl;
+        if (w < 0.5) { a = SOIL0; d = SOIL1; lvl = w * 32; } else { a = SOIL1; d = SOIL2; lvl = (w - 0.5) * 32; }
+        let col = lvl > bay(wx, y) ? d : a;
+        if (((wx * 7 + y * 11) % 13) === 0) col = SHADE[col];   // clods
+        if (r === 0) col = SHADE[col];                          // back rim shade
+        px(x, y, col);
+      }
+    }
+  }
+}
+
+// ---------- 8. Timeline: EST -> (WALK, LIFT, POUR, SETTLE) x3 -> WALK home -> HOME ----------
+const S_EST = 0, S_WALK = 1, S_LIFT = 2, S_POUR = 3, S_SETTLE = 4, S_HOME = 5;
+const SEG_MAX = 16;
+const SG_T = new Uint8Array(SEG_MAX), SG_BED = new Int8Array(SEG_MAX);
+const SG_T0 = new Float64Array(SEG_MAX), SG_D = new Float64Array(SEG_MAX);
+const SG_X0 = new Float64Array(SEG_MAX), SG_X1 = new Float64Array(SEG_MAX);
+let SEG_N = 0, segEnd = 0;
+function addSeg(type, dur, x0, x1, bed) {
+  SG_T[SEG_N] = type; SG_T0[SEG_N] = segEnd; SG_D[SEG_N] = dur;
+  SG_X0[SEG_N] = x0; SG_X1[SEG_N] = x1; SG_BED[SEG_N] = bed; segEnd += dur; SEG_N++;
+}
+const STOP = [BED_X[0] - 14, BED_X[1] - 14, BED_X[2] - 14];
+const WALK_V = 14, WALK_HOME_V = 17, EST_CAM = 128;
+addSeg(S_EST, 6.0, HOME_X, HOME_X, -1);
+addSeg(S_WALK, (STOP[0] - HOME_X) / WALK_V, HOME_X, STOP[0], 0);
+for (let b = 0; b < 3; b++) {
+  const s = STOP[b];
+  addSeg(S_LIFT, 1.3, s, s, b); addSeg(S_POUR, 5.2, s, s, b); addSeg(S_SETTLE, 4.0, s, s, b);
+  if (b < 2) addSeg(S_WALK, (STOP[b + 1] - s) / WALK_V, s, STOP[b + 1], b + 1);
+}
+addSeg(S_WALK, (STOP[2] - HOME_X) / WALK_HOME_V, STOP[2], HOME_X, -1);
+addSeg(S_HOME, LOOP - segEnd, HOME_X, HOME_X, -1);
+
+function segAt(t) { for (let i = 0; i < SEG_N; i++) if (t < SG_T0[i] + SG_D[i]) return i; return SEG_N - 1; }
+function trapez(u, r) {                           // distance fraction with accel/decel ramps
+  const v = 1 / (1 - r);
+  if (u < r) return v * u * u / (2 * r);
+  if (u > 1 - r) return 1 - v * (1 - u) * (1 - u) / (2 * r);
+  return v * (u - r / 2);
+}
+
+// ---------- 9. Character pose (smooth parameters, quantised to ~12 fps) ----------
+const P = { x: HOME_X, face: 1, legF: -1, bob: 0, arm: 0, reach: 0, tilt: 0, swing: 0, head: 0,
+            hem: 0, hair: 0, far: 0, state: 0, seg: 0, u: 0, bed: -1, pour: false, walking: false,
+            tipX: 0, tipY: 0, dirX: 1, dirY: 0, feetY: 0 };
+const LEGO = new Int8Array([3, 2, 0, -2, -3, -2, 0, 2]);
+const LIFTF = new Uint8Array([0, 0, 0, 0, 0, 1, 1, 0]);
+
+function computePose(t) {
+  const i = segAt(t), ty = SG_T[i], d = SG_D[i];
+  const tq = Math.floor(t * 12) / 12;
+  const u = (t - SG_T0[i]) / d, uq = clamp((tq - SG_T0[i]) / d, 0, 1), sq = uq * d;
+  P.state = ty; P.seg = i; P.u = u; P.bed = SG_BED[i];
+  P.x = SG_X0[i]; P.face = 1; P.legF = -1; P.bob = 0; P.arm = 0; P.reach = 0; P.tilt = 0;
+  P.swing = 0; P.head = 0; P.far = 0; P.pour = false; P.walking = false;
+  P.hair = ri(Math.sin(TAU * tq / HAIR_P) * 1.2);
+  P.hem = Math.sin(TAU * tq / BREEZE_P) > 0.55 ? 1 : 0;
+  if (ty === S_WALK) {
+    const x0 = SG_X0[i], x1 = SG_X1[i], r = Math.min(0.45, 0.7 / d);
+    P.x = lerp(x0, x1, trapez(u, r));
+    P.face = x1 > x0 ? 1 : -1; P.walking = true;
+    const phase = Math.abs(lerp(x0, x1, trapez(uq, r)) - x0) / 14;
+    P.legF = Math.floor(phase * 8) & 7;
+    P.bob = (P.legF === 2 || P.legF === 6) ? -1 : 0;
+    const s = Math.sin(P.legF / 8 * TAU);
+    P.swing = 0.16 * s; P.far = ri(-s * 1.6); P.hem = ri(s * 0.8);
+    P.hair = clamp(P.hair - 1, -1, 1);                          // strands trail behind
+  } else if (ty === S_LIFT) {
+    P.arm = ease(uq * 1.15); P.tilt = 0.2 * ease((uq - 0.5) / 0.5); P.head = ease((uq - 0.35) / 0.6);
+  } else if (ty === S_POUR) {
+    P.arm = 1; P.reach = easeSine(uq); P.head = 1;
+    P.tilt = 0.2 + 0.8 * ease(uq / 0.12) - 0.8 * ease((uq - 0.88) / 0.12);
+    P.pour = u > 0.07 && u < 0.92;
+  } else if (ty === S_SETTLE) {
+    P.arm = 1 - ease(sq / 0.9); P.tilt = 0.2 * (1 - ease(sq / 0.5));
+    if (sq < 0.6) P.head = 1;
+    else if (sq < 1.2) P.head = 1 - ease((sq - 0.6) / 0.6);
+    else if (sq < 1.7) P.head = -ease((sq - 1.2) / 0.5);
+    else if (sq < 3.1) P.head = -1;                               // held gaze toward the sun
+    else if (sq < 3.6) P.head = -1 + ease((sq - 3.1) / 0.5);
+    if (P.bed === 2 && sq > 3.6) P.face = -1;                     // turn for home
+  } else if (ty === S_HOME) {
+    P.face = sq > 0.9 ? 1 : -1;
+  }
+  P.feetY = pathY(ri(P.x)) + 1;
+  // Watering-can spout tip in world space (matches the drawn sprite).
+  const b = P.bob, hx = ri(lerp(1, 6 + P.reach * 2, P.arm)), hy = ri(lerp(-11, -18 + P.reach, P.arm)) + b;
+  const th = P.swing + P.tilt * 0.9, cs = Math.cos(th), sn = Math.sin(th);
+  const lx = hx + ri(cs * 11 + sn * 3), ly = hy + 1 + ri(sn * 11 - cs * 3);
+  P.tipX = ri(P.x) + P.face * lx; P.tipY = P.feetY + ly;
+  P.dirX = P.face * (cs * 0.7071 + sn * 0.7071); P.dirY = sn * 0.7071 - cs * 0.7071;
+}
+
+// ---------- 10. Character sprite (drawn facing right into CB, then lit on blit) ----------
+const CW = 48, CH = 48, AX = 20, AY = 44;
+const CB = new Uint8Array(CW * CH);
+function cp(x, y, c) { x += AX; y += AY; if (x < 0 || y < 0 || x >= CW || y >= CH) return; CB[y * CW + x] = c; }
+function cline(x0, y0, x1, y1, c) {
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    cp(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edge(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+function cquad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const e0 = edge(ax, ay, bx, by, x, y), e1 = edge(bx, by, cx, cy, x, y);
+    const e2 = edge(cx, cy, dx, dy, x, y), e3 = edge(dx, dy, ax, ay, x, y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) cp(x, y, c);
+  }
+}
+
+let cCos = 1, cSin = 0, cGX = 0, cGY = 0;           // current can transform
+function rx(x, y) { return ri(cGX + cCos * x - cSin * y); }
+function ry(x, y) { return ri(cGY + cSin * x + cCos * y); }
+function fx(x, y) { return cGX + cCos * x - cSin * y; }
+function fy(x, y) { return cGY + cSin * x + cCos * y; }
+function drawCan(gx, gy, th) {
+  cCos = Math.cos(th); cSin = Math.sin(th); cGX = gx; cGY = gy;
+  cline(rx(3, 5), ry(3, 5), rx(10, -2), ry(10, -2), CAN1);        // long spout
+  cline(rx(3, 6), ry(3, 6), rx(10, -1), ry(10, -1), CAN2);
+  cp(rx(11, -3), ry(11, -3), CAN0); cp(rx(11, -2), ry(11, -2), CAN1); cp(rx(10, -3), ry(10, -3), CAN0);
+  cquad(fx(-3, 2), fy(-3, 2), fx(3, 2), fy(3, 2), fx(3.6, 7), fy(3.6, 7), fx(-3.8, 7), fy(-3.8, 7), CAN1);
+  cline(rx(-3, 2), ry(-3, 2), rx(3, 2), ry(3, 2), CAN0);          // lit top rim
+  cline(rx(-3, 7), ry(-3, 7), rx(3, 7), ry(3, 7), CAN2);          // dark base
+  cline(rx(-3, 4), ry(-3, 4), rx(-3, 6), ry(-3, 6), CAN2);
+  cline(rx(-3, 2), ry(-3, 2), rx(-2, 0), ry(-2, 0), CAN2);        // top handle
+  cline(rx(-2, 0), ry(-2, 0), rx(1, 0), ry(1, 0), CAN2);
+  cline(rx(1, 0), ry(1, 0), rx(2, 2), ry(2, 2), CAN2);
+  cp(rx(2, 3), ry(2, 3), SUN0);                                    // warm specular
+}
+
+function drawCharSprite() {
+  CB.fill(CLEAR);
+  const b = P.bob, hd = P.head > 0.5 ? 1 : 0, hv = P.head > 0.5 ? 1 : P.head < -0.5 ? -1 : 0;
+  const walking = P.walking;
+  // far arm
+  cline(-1, -19 + b, -1 + P.far, -11 + b, SKIN1);
+  // legs + shoes
+  const fo = P.legF < 0 ? 1 : LEGO[P.legF], bo = P.legF < 0 ? -1 : -LEGO[P.legF];
+  const fl = P.legF < 0 ? 0 : LIFTF[P.legF], bl = P.legF < 0 ? 0 : LIFTF[(P.legF + 4) & 7];
+  cline(-1, -7 + b, bo, -2 - bl, SKIN1); cp(bo, -1 - bl, TRIM); cp(bo + 1, -1 - bl, TRIM); cp(bo - 1, -bl, TRIM); cp(bo, -bl, TRIM); cp(bo + 1, -bl, TRIM); cp(bo + 2, -bl, TRIM);
+  cline(0, -7 + b, fo, -2 - fl, SKIN0); cp(fo, -1 - fl, TRIM); cp(fo + 1, -1 - fl, TRIM); cp(fo - 1, -fl, TRIM); cp(fo, -fl, TRIM); cp(fo + 1, -fl, TRIM); cp(fo + 2, -fl, TRIM);
+  // skirt (flares toward the hem, sways with walk + breeze)
+  const wy = -15 + b;
+  let skL = 0, skR = 0;
+  for (let k = 0; k <= 9; k++) {
+    const y = wy + k, sway = k > 6 ? P.hem : 0;
+    const L = -3 - Math.floor(k * 0.36) + sway - (walking && k > 5 ? 1 : 0);
+    const R = 2 + Math.floor(k * 0.42) + sway;
+    for (let x = L; x <= R; x++) cp(x, y, k === 9 ? ((x + k) & 1 ? DRESS1 : DRESS0) : DRESS0);
+    if (k >= 3) { cp(L + 2 + (k > 6 ? sway : 0), y, DRESS1); cp(0 + (k > 6 ? sway : 0), y, DRESS1); }
+    if (k === 9) cp(L, y, DRESS1);
+    if (k >= 1 && k <= 6) for (let x = R - 2; x <= R; x++) cp(x, y, k === 6 ? CAN0 : APRON);  // short apron
+    if (k === 0) { skL = L; skR = R; }
+  }
+  for (let x = skL; x <= skR; x++) cp(x, wy, APRON);             // apron strings
+  cp(skL - 1, wy, APRON); cp(skL - 2, wy + 1, APRON); cp(skL - 1, wy + 2, APRON);
+  // bodice, bare shoulders, straps
+  for (let y = -19; y <= -16; y++) for (let x = -2; x <= 2; x++) cp(x, y + b, DRESS0);
+  cp(3, -18 + b, DRESS0); cp(3, -17 + b, DRESS0);
+  cp(-2, -20 + b, SKIN0); cp(-1, -20 + b, SKIN0); cp(0, -20 + b, DRESS1); cp(1, -20 + b, SKIN0);
+  cp(0, -21 + b, SKIN1); cp(1, -21 + b, SKIN1);
+  // head (offset by head tilt)
+  const ox = hd, oy = b + hv;
+  for (let x = 0; x <= 2; x++) cp(x + ox, -22 + oy, SKIN0);
+  for (let y = -25; y <= -23; y++) for (let x = -2; x <= 3; x++) cp(x + ox, y + oy, y === -25 ? SKIN1 : SKIN0);
+  cp(4 + ox, -24 + oy, SKIN0); cp(2 + ox, -24 + oy, SKIN2); cp(1 + ox, -23 + oy, PINK0); cp(3 + ox, -22 + oy, SKIN1);
+  // hair: back of head, low bun, loose strands in the wind
+  for (let y = -25; y <= -22; y++) { cp(-3 + ox, y + oy, WOOD1); cp(-2 + ox, y + oy, WOOD1); }
+  cp(-1 + ox, -22 + oy, WOOD1); cp(-1 + ox, -21 + oy, WOOD1);
+  cp(-4 + ox, -23 + oy, WOOD1); cp(-5 + ox, -23 + oy, WOOD1); cp(-4 + ox, -22 + oy, WOOD1); cp(-5 + ox, -22 + oy, TRIM); cp(-4 + ox, -21 + oy, TRIM);
+  const sa = P.hair;
+  cp(-4 + ox, -25 + oy, WOOD1); cp(-5 + ox, -25 + oy, WOOD1); cp(-6 + ox + sa, -24 + oy, WOOD1); cp(-7 + ox + sa, -24 + oy + (sa > 0 ? 1 : 0), WOOD1);
+  cp(-6 + ox, -21 + oy, WOOD1); cp(-7 + ox + (sa < 0 ? 0 : sa), -20 + oy, WOOD1);
+  // wide-brimmed straw hat
+  for (let x = -2; x <= 1; x++) cp(x + ox, -29 + oy, HAT0);
+  for (let y = -28; y <= -27; y++) for (let x = -3; x <= 2; x++) cp(x + ox, y + oy, y === -27 ? PINK1 : HAT0);
+  cp(-3 + ox, -27 + oy, HAT1);
+  const ft = hv, bt = -hv;                                        // brim tilt: front dips when looking down
+  for (let x = -7; x <= 7; x++) {
+    const dy = x >= 5 ? (ft > 0 ? 1 : ft < 0 ? -1 : 0) : x <= -5 ? (bt > 0 ? 1 : bt < 0 ? -1 : 0) : 0;
+    cp(x + ox, -26 + oy + dy, HAT0);
+    if (x > -7 && x < 7) cp(x + ox, -25 + oy + dy, HAT1);
+  }
+  cp(8 + ox, -25 + oy + (ft > 0 ? 1 : ft < 0 ? -1 : 0), HAT0);
+  cp(-8 + ox, -25 + oy + (bt > 0 ? 1 : bt < 0 ? -1 : 0), HAT0);
+  // watering can + near arm
+  const hx = ri(lerp(1, 6 + P.reach * 2, P.arm)), hy = ri(lerp(-11, -18 + P.reach, P.arm)) + b;
+  drawCan(hx, hy + 1, P.swing + P.tilt * 0.9);
+  cline(0, -19 + b, hx, hy, SKIN0);
+  if (Math.abs(hy - (-19 + b)) > Math.abs(hx)) cline(1, -19 + b, hx + 1, hy, SKIN0);
+  else cline(0, -18 + b, hx, hy + 1, SKIN0);
+  cp(hx, hy, SKIN0); cp(hx + 1, hy, SKIN0);
+}
+
+// Blit with lighting: 1 px hot rim on sun-facing (right) and top edges, a 2 px lit
+// band behind it, cool shade inside, and a dark selective outline on the shadow side.
+let cFlip = false;
+function opq(cx, cy) {
+  if (cx < 0 || cy < 0 || cx >= CW || cy >= CH) return false;
+  return CB[cy * CW + (cFlip ? CW - 1 - cx : cx)] !== CLEAR;
+}
+function blitChar(sx, feetY) {
+  cFlip = P.face < 0;
+  const ox = sx - (cFlip ? CW - 1 - AX : AX), oy = feetY - AY;
+  for (let cy = 0; cy < CH; cy++) for (let cx = 0; cx < CW; cx++) {
+    const v = CB[cy * CW + (cFlip ? CW - 1 - cx : cx)];
+    const X = ox + cx, Y = oy + cy;
+    if (v === CLEAR) { if (opq(cx + 1, cy)) px(X, Y, K1); continue; }
+    let c;
+    const eR = !opq(cx + 1, cy), eT = !opq(cx, cy - 1) && !opq(cx + 1, cy - 1);
+    if (eR || eT) {
+      if (v === CAN0 || v === CAN1 || v === CAN2) c = eT ? CAN0 : CAN1;   // metal keeps a cool sheen
+      else c = cy >= AY - 1 ? v : RIM;                                    // soles on the ground stay dark
+    }
+    else if (!opq(cx + 2, cy) || !opq(cx + 3, cy)) c = v;
+    else c = SHADE[v];
+    px(X, Y, c);
+  }
+}
+// Long cool shadow of the character, projected from the sprite silhouette.
+const STAMP = new Uint16Array(W * H);
+let stampId = 1;
+function charShadow(sx, feetY) {
+  cFlip = P.face < 0;
+  stampId = (stampId % 65535) + 1;
+  const ox = sx - (cFlip ? CW - 1 - AX : AX), oy = feetY - AY;
+  for (let cy = 0; cy < CH; cy++) for (let cx = 0; cx < CW; cx++) {
+    if (!opq(cx, cy)) continue;
+    const h = AY - cy; if (h < 0) continue;
+    const gx = ox + cx - ri(h * 1.4), gy = feetY + ri(h * 0.5);
+    const lvl = 17 - h * 0.22;
+    for (let k = 0; k < 3; k++) {
+      const x = gx + k;
+      if (x < 0 || x >= W || gy < IMG_TOP || gy >= IMG_BOT) continue;
+      const i = gy * W + x;
+      if (STAMP[i] === stampId) continue;
+      STAMP[i] = stampId;
+      if (lvl > bay(x, gy)) FB[i] = SHADE[FB[i]];
+    }
+  }
+}
+
+// ---------- 11. Camera: shot targets per state, smoothed by a critically damped spring ----------
+let camX = EST_CAM, camV = 0, prevCam = EST_CAM;
+function camTarget(t) {
+  const i = segAt(t), ty = SG_T[i], d = SG_D[i], u = (t - SG_T0[i]) / d, s = u * d;
+  if (ty === S_EST) return lerp(EST_CAM, 0, easeSine(u));        // establishing dolly, reveals cottage
+  if (ty === S_HOME) return lerp(0, EST_CAM, easeSine(u));       // drift back out to the view
+  let off = -107;                                                  // walking: she sits on the left third
+  if (ty === S_WALK) {
+    if (P.face < 0) off = lerp(-80, -213, easeSine(s / 3.0));     // heading home: right third, lead room left
+    else if (SG_T[i - 1] === S_SETTLE) off = lerp(-80, -107, easeSine(s / 2.5));
+  } else if (ty === S_LIFT) off = lerp(-107, -84, easeSine(s / 2.5));
+  else if (ty === S_POUR) off = lerp(-107, -84, easeSine((1.3 + s) / 2.5)) + 4 * easeSine(u);
+  else if (ty === S_SETTLE) off = -80;                            // her + bed framed on the thirds
+  return clamp(P.x + off, 0, CAM_MAX);
+}
+function stepCamera(target) {
+  const om = 2 / 0.9, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = camX - target, tmp = (camV + om * ch) * STEP;
+  camV = (camV - om * tmp) * ex;
+  camX = target + (ch + tmp) * ex;
+}
+
+// ---------- 12. Pooled particles (preallocated, reused, zero allocation) ----------
+const PN = 320, T_DROP = 1, T_SPLASH = 2, T_MOTE = 3, MOTES = 46;
+const pX = new Float32Array(PN), pY = new Float32Array(PN), pVX = new Float32Array(PN), pVY = new Float32Array(PN);
+const pAge = new Float32Array(PN), pLife = new Float32Array(PN);
+const pType = new Uint8Array(PN), pFlash = new Uint8Array(PN);
+let pNext = MOTES, emitAcc = 0;
+function spawn(type, x, y, vx, vy, life) {
+  for (let k = 0; k < PN - MOTES; k++) {
+    const i = MOTES + ((pNext - MOTES + k) % (PN - MOTES));
+    if (pType[i] === 0) {
+      pType[i] = type; pX[i] = x; pY[i] = y; pVX[i] = vx; pVY[i] = vy;
+      pAge[i] = 0; pLife[i] = life; pFlash[i] = 0;
+      pNext = i + 1 >= PN ? MOTES : i + 1;
+      return i;
+    }
+  }
+  return -1;
+}
+// Dust motes and pollen live in slots [0, MOTES) in screen space, forever.
+for (let i = 0; i < MOTES; i++) {
+  pType[i] = T_MOTE; pX[i] = rnd() * W; pY[i] = IMG_TOP + 8 + rnd() * 118;
+  pVX[i] = 0.6 + rnd() * 1.6; pLife[i] = rnd() * TAU; pFlash[i] = i & 1;   // pFlash: 0 dust, 1 pollen
+}
+function splash(x, y, n) {
+  for (let k = 0; k < n; k++) spawn(T_SPLASH, x, y - 1, (rnd() - 0.5) * 34, -18 - rnd() * 26, 0.22 + rnd() * 0.12);
+}
+function landDrop(i) {
+  const x = pX[i], y = pY[i], ix = Math.floor(x);
+  for (let b = 0; b < 3; b++) {
+    const c = ix - BED_X[b];
+    if (c < 0 || c >= BED_W) continue;
+    if (c < 2 || c >= BED_W - 2) { if (y >= BED_Y[b]) { splash(x, BED_Y[b], 1); return true; } return false; }
+    if (y >= BED_Y[b] + 2) {
+      const o = b * BED_W;
+      WET[o + c] = Math.min(1, WET[o + c] + 0.1);
+      if (c > 2) WET[o + c - 1] = Math.min(1, WET[o + c - 1] + 0.05);
+      if (c < BED_W - 3) WET[o + c + 1] = Math.min(1, WET[o + c + 1] + 0.05);
+      for (let p = 0; p < 21; p++) if (PL_BED[p] === b && Math.abs(PL_X[p] - ix) <= 3) PL_PERK[p] = 1;
+      splash(x, BED_Y[b] + 2, 2 + (rnd() < 0.5 ? 1 : 0));
+      return true;
+    }
+    return false;                                   // over this bed: keep falling to its soil
+  }
+  if (y >= pathY(ix) + 2) { splash(x, y, 2); return true; }
+  return false;
+}
+
+// ---------- 13. Fixed 60 Hz simulation step ----------
+let frame = 0;
+function update() {
+  frame = (frame + 1) % LOOP_FRAMES;
+  gT = frame / 60;
+  computePose(gT);
+  stepCamera(camTarget(gT));
+  const camDelta = camX - prevCam; prevCam = camX;
+  for (let i = 0; i < WET.length; i++) if (WET[i] > 0) WET[i] = Math.max(0, WET[i] - STEP / 42);
+  for (let i = 0; i < PL_N; i++) if (PL_PERK[i] > 0) PL_PERK[i] = Math.max(0, PL_PERK[i] - STEP * 2.4);
+  // water: a stream while pouring, the odd drip while walking
+  if (P.pour) {
+    emitAcc += 46 * STEP * clamp((P.tilt - 0.4) / 0.4, 0, 1);
+    const sp = 20 + 24 * P.reach;
+    while (emitAcc >= 1) {
+      emitAcc -= 1;
+      const v = sp * (0.88 + rnd() * 0.24);
+      spawn(T_DROP, P.tipX + (rnd() - 0.5), P.tipY + (rnd() - 0.5),
+            P.dirX * v + (rnd() - 0.5) * 5, P.dirY * v + (rnd() - 0.5) * 5, 3);
+    }
+  } else emitAcc = 0;
+  if (P.walking && rnd() < 0.006) spawn(T_DROP, P.tipX, P.tipY + 1, P.face * 5, 4, 3);
+  // integrate
+  for (let i = 0; i < PN; i++) {
+    const ty = pType[i];
+    if (ty === 0) continue;
+    if (ty === T_MOTE) {
+      pX[i] += pVX[i] * STEP - camDelta * 0.9;
+      pY[i] += Math.sin(TAU * gT * 2 / LOOP * 8 + pLife[i]) * 1.4 * STEP;
+      if (pX[i] < -4) pX[i] += W + 8; else if (pX[i] > W + 4) pX[i] -= W + 8;
+      continue;
+    }
+    pAge[i] += STEP;
+    pVY[i] += (ty === T_DROP ? 130 : 150) * STEP;
+    pX[i] += pVX[i] * STEP; pY[i] += pVY[i] * STEP;
+    if (ty === T_DROP) { if (landDrop(i) || pAge[i] > pLife[i]) pType[i] = 0; }
+    else if (pAge[i] > pLife[i]) pType[i] = 0;
+  }
+}
+
+// ---------- 14. God rays: dithered warm bands fanning from the sun ----------
+const RAY_N = 4;
+const RAY_S = new Float32Array([-2.1, -1.05, -0.42, 0.32]);     // dx per dy
+const RAY_W = new Float32Array([0.24, 0.19, 0.25, 0.16]);        // width growth
+const RAY_A = new Float32Array([0.8, 1.0, 0.85, 0.65]);        // strength
+const RAY_K = new Uint8Array([3, 5, 4, 7]);                     // shimmer cycles per loop
+const rayAmp = new Float32Array(RAY_N);
+function prepRays() { for (let i = 0; i < RAY_N; i++) rayAmp[i] = RAY_A[i] * (0.76 + 0.24 * Math.sin(TAU * gT * RAY_K[i] / LOOP + i * 1.7)); }
+function rayLevel(x, y) {
+  const d = y - SUN_Y; if (d < 4) return 0;
+  const fade = d < 14 ? d / 14 : Math.max(0, 1 - (d - 14) / 140);
+  let best = 0;
+  for (let i = 0; i < RAY_N; i++) {
+    const hw = 1.5 + d * RAY_W[i], ax = Math.abs(x - (sunX + RAY_S[i] * d));
+    if (ax < hw) { const v = (1 - ax / hw) * rayAmp[i] * fade * 16; if (v > best) best = v; }
+  }
+  return best;
+}
+function drawRays() {
+  const off = (frame >> 3) & 3;                                  // shimmer: dither offset shifts every 8 frames
+  for (let y = SUN_Y + 4; y < IMG_BOT; y++) {
+    const o = y * W;
+    for (let x = 0; x < W; x++) if (rayLevel(x, y) > bay(x + off, y + (off >> 1))) FB[o + x] = LIGHT[FB[o + x]];
+  }
+}
+
+// ---------- 15. Particles, butterflies, motes ----------
+function drawParticles(cam) {
+  for (let i = MOTES; i < PN; i++) {
+    const ty = pType[i]; if (ty === 0) continue;
+    const x = Math.floor(pX[i]) - cam, y = Math.floor(pY[i]), a = pAge[i];
+    let c = ty === T_DROP ? (a < 0.1 ? WAT0 : a < 0.28 ? WAT1 : WAT2) : (a < 0.06 ? WAT0 : a < 0.14 ? WAT1 : WAT2);
+    if (ty === T_DROP && !pFlash[i]) {                          // backlit sparkle, once per drop
+      const dx = x - sunX, dy = y - SUN_Y;
+      if (dx * dx + dy * dy < 90 || (rayLevel(x, y) > 7 && ((i * 7 + frame) % 9) === 0)) { c = SUN0; pFlash[i] = 1; }
+    }
+    px(x, y, c);
+  }
+}
+function drawButterfly(k, cam) {
+  const tt = TAU * gT / LOOP;
+  const wx = k === 0 ? 225 + 62 * Math.sin(tt * 3) + 14 * Math.sin(tt * 11 + 1) : 330 + 58 * Math.sin(tt * 2 + 1.3) + 12 * Math.sin(tt * 13);
+  const wy = k === 0 ? 117 + 7 * Math.sin(tt * 7 + 0.5) + 3 * Math.sin(tt * 23) : 113 + 8 * Math.sin(tt * 5 + 2) + 3 * Math.sin(tt * 19 + 1);
+  const x = ri(wx) - cam, y = ri(wy);
+  if (x < -3 || x > W + 3) return;
+  const c1 = k === 0 ? CREAM : PINK0, c2 = k === 0 ? YEL0 : LAV;
+  px(x, y, TRIM); px(x, y + 1, TRIM);
+  if ((Math.floor(gT * 9 + k * 0.5) & 1) === 0) {
+    px(x - 1, y, c1); px(x + 1, y, c1); px(x - 2, y - 1, c1); px(x + 2, y - 1, c2); px(x - 1, y + 1, c2); px(x + 1, y + 1, c2);
+  } else {
+    px(x - 1, y - 1, c1); px(x + 1, y - 1, c1); px(x - 1, y - 2, c2); px(x + 1, y - 2, c2);
+  }
+}
+function drawMotes() {
+  const tw = frame >> 3;
+  for (let i = 0; i < MOTES; i++) {
+    const x = Math.floor(pX[i]), y = Math.floor(pY[i]);
+    const r = rayLevel(x, y);
+    if (r > 5) px(x, y, ((tw + i) & 3) === 0 ? SUN0 : RIM);        // glinting in the light shafts
+    else if (pFlash[i] && ((tw + i) & 7) < 5) px(x, y, YEL1);      // pollen drifting in the shade
+  }
+}
+
+// ---------- 16. Out-of-focus foreground (parallax 1.4) ----------
+const FG_F = 1.4, FGW = W + Math.ceil(CAM_MAX * FG_F) + 40;
+const BL_N = 64;
+const BL_X = new Int16Array(BL_N), BL_H = new Uint8Array(BL_N), BL_L = new Float32Array(BL_N), BL_W = new Uint8Array(BL_N);
+{
+  const clumps = [8, 70, 150, 232, 300, 372, 440, 505, 570];
+  for (let i = 0; i < BL_N; i++) {
+    const c = clumps[i % clumps.length];
+    BL_X[i] = c + ((rnd() - 0.5) * 16) | 0;
+    BL_H[i] = 8 + ((rnd() * (i % 5 === 0 ? 22 : 13)) | 0);
+    BL_L[i] = (rnd() - 0.5) * 1.6; BL_W[i] = rnd() < 0.5 ? 2 : 3;
+  }
+}
+// Leafy branch sprite: 0 empty, 1 solid, 2 dithered soft fringe.
+const BR_W = 100, BR_H = 44, BR = new Uint8Array(BR_W * BR_H);
+{
+  const put = (x, y) => { if (x >= 0 && y >= 0 && x < BR_W && y < BR_H) BR[y * BR_W + x] = 1; };
+  const leaf = (x, y, d) => {                                    // small pointed leaf, drooping outward
+    put(x, y); put(x + d, y); put(x + 2 * d, y);
+    put(x + d, y + 1); put(x + 2 * d, y + 1); put(x + 3 * d, y + 1);
+    put(x + 3 * d, y + 2); put(x + 4 * d, y + 3);
+  };
+  const limbY = (x) => ri(x * 0.2 + x * x * 0.0026);
+  for (let x = 0; x < 84; x++) {                                 // limb enters from the corner and droops
+    const y = limbY(x), th = x < 20 ? 3 : x < 50 ? 2 : 1;
+    for (let k = 0; k < th; k++) put(x, y + k);
+  }
+  const tw = [14, 14, 27, 22, 40, 17, 52, 26, 64, 19, 75, 24, 84, 15];   // twig root x, length
+  for (let i = 0; i < tw.length; i += 2) {
+    const x0 = tw[i], len = tw[i + 1], y0 = limbY(x0) + 1;
+    let x = x0, y = y0;
+    for (let j = 0; j < len; j++) {
+      x = ri(x0 + j * 0.3 + Math.sin(j * 0.35 + i) * 1.2); y = y0 + j;
+      put(x, y);
+      if (j > 1 && j % 3 === 2) { leaf(x - 1, y, -1); leaf(x + 1, y + 1, 1); }
+    }
+    leaf(x, y + 1, -1); leaf(x, y + 1, 1);                          // tip cluster
+  }
+  for (let x = 6; x < 84; x += 5) leaf(x, limbY(x) + 2, (x / 5) & 1 ? 1 : -1);
+  // Soften: pockets surrounded by leaves fill solid, outer concavities get a dithered fringe.
+  const cnt = new Uint8Array(BR_W * BR_H);
+  for (let y = 0; y < BR_H; y++) for (let x = 0; x < BR_W; x++) {
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx, yy = y + dy;
+      if ((dx || dy) && xx >= 0 && yy >= 0 && xx < BR_W && yy < BR_H && BR[yy * BR_W + xx] === 1) n++;
+    }
+    cnt[y * BR_W + x] = n;
+  }
+  for (let i = 0; i < BR_W * BR_H; i++) if (!BR[i]) BR[i] = cnt[i] >= 5 ? 1 : cnt[i] >= 3 ? 2 : 0;
+}
+function drawBranch(sx, flip) {
+  for (let y = 0; y < BR_H; y++) {
+    const sw = y > 10 ? breeze(y * 3 + (flip ? 500 : 0)) : 0;
+    for (let x = 0; x < BR_W; x++) {
+      const v = BR[y * BR_W + (flip ? BR_W - 1 - x : x)]; if (!v) continue;
+      const X = sx + x + sw, Y = IMG_TOP - 2 + y;
+      if (v === 1 || ((X + Y) & 1)) px(X, Y, K1);
+    }
+  }
+}
+function drawForeground(cam) {
+  const fo = ri(cam * FG_F);
+  for (let i = 0; i < BL_N; i++) {
+    const bx = BL_X[i] - fo; if (bx < -20 || bx > W + 20) continue;
+    const h = BL_H[i], sw = breeze(BL_X[i] * 2);
+    for (let j = 0; j <= h; j++) {
+      const f = j / h, x = bx + ri(BL_L[i] * f * f * h * 0.5) + (f > 0.6 ? sw : 0), y = IMG_BOT + 1 - j;
+      const w = f < 0.35 ? BL_W[i] : f < 0.75 ? 2 : 1;
+      for (let k = 0; k < w; k++) px(x + k, y, K1);
+      if (((x + w + y) & 1) === 0) px(x + w, y, K1);            // soft dithered edge (shallow DOF)
+    }
+  }
+  drawBranch(-34 - fo, false);
+  drawBranch(470 - fo, true);
+}
+
+// ---------- 17. Vignette + letterbox ----------
+const VIG = new Uint8Array(W * H);
+for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+  const nx = (x - 159.5) / 160, ny = (y - 89.5) / 67, a = nx * nx, b = ny * ny;
+  VIG[y * W + x] = clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * 12), 0, 15);
+}
+function vignette() {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = SHADE[FB[i]];
+  }
+}
+function letterbox() { FB.fill(K0, 0, IMG_TOP * W); FB.fill(K0, IMG_BOT * W); }
+
+// ---------- 18. Frame composition ----------
+function render() {
+  const cam = ri(camX);
+  target(FB, W);
+  drawSky(); drawSun(cam); drawClouds(cam); drawHills(cam);
+  for (let y = IMG_TOP; y < IMG_BOT; y++) {
+    const yo = y * WORLD_W + cam, o = y * W;
+    for (let x = 0; x < W; x++) { const c = YARD[yo + x]; if (c !== CLEAR) FB[o + x] = c; }
+  }
+  drawCharSprite();
+  const sx = ri(P.x) - cam, fy = P.feetY;
+  charShadow(sx, fy);
+  drawSoil(cam);
+  drawTufts(cam, fy, false);
+  for (let i = 21; i < PL_N; i++) drawPlant(i, cam);             // window box
+  prepRays(); drawRays();
+  blitChar(sx, fy);
+  for (let i = 0; i < 21; i++) drawPlant(i, cam);                // beds sit in front of the path
+  drawTufts(cam, fy, true);
+  drawParticles(cam);
+  drawButterfly(0, cam); drawButterfly(1, cam);
+  drawMotes();
+  drawForeground(cam);
+  vignette();
+  letterbox();
+  present();
+}
+
+// ---------- 19. Output: indexed -> RGBA, integer-scaled blit ----------
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+
+// ---------- 20. Boot: bake static layers, pre-roll one loop, run ----------
+buildYard();
+for (let i = 0; i < LOOP_FRAMES; i++) update();                  // steady state => seamless first loop
+const seek = /t=(\d+(?:\.\d+)?)/.exec(location.hash);             // optional: #t=30 starts 30 s into the loop
+if (seek) { const n = Math.floor(parseFloat(seek[1]) * 60) % LOOP_FRAMES; for (let i = 0; i < n; i++) update(); }
+resize();
+window.addEventListener('resize', resize);
+let last = performance.now(), acc = 0;
+function tick(now) {
+  let dt = (now - last) / 1000; last = now;
+  if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+  acc += dt;
+  while (acc >= STEP) { update(); acc -= STEP; }
+  render();
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

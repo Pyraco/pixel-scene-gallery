@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbit Repair</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+
+/* ==========================================================================
+   TEST 6 - SPACE, ISOMETRIC: "Orbit Repair"
+   Resolved options (non-defaults marked *):
+     OUTPUT_MODE loop · LOOP_SECONDS 40* · RESOLUTION 320x180 · FRAME full* · WORLD_W 1.25* · WORLD_H 1
+     PROJECTION isometric* · TRAVEL none (the camera drifts to follow the EVA)* · ENVIRONMENT space* · ERA sci-fi*
+     SETTING a small orbital station: habitation module, lattice truss, a rotary joint and two solar wings,
+       above a blue planet*
+     TIME timeless* · WEATHER n/a · ATMOSPHERE none* (space: no haze) · SKY stars + nebula band*
+     LIGHT_STYLE side-lit* (hard sun from screen-left, above) · KEY sun, visible in the corner with a lens flare*
+     PRACTICALS nav beacons (red, green), antenna strobe (white), cabin windows (warm), welding arc (cyan)*
+     SHADOWS none (nothing near enough to receive them)* · shadow faces go near-black* · RIM on (hard, sun side)
+     MOOD quiet, precise, vast* · GRADE cool with warm accents* · PALETTE 47*
+     SUBJECT_COUNT 2* · S1 astronaut in a white EVA suit, gold visor, tethered* · S2 repair drone, blue eye, companion*
+     INTERACTION pass-object (the drone hands over a new solar cell)*
+     BEATS hatch opens -> traverse the truss hand over hand -> weld the joint (sparks) -> take the cell from the
+           drone and fit it (status light turns green) -> look at the planet -> traverse back -> hatch closes*
+     LOOP_CLOSE a micrometeoroid cracks the same cell again (the status light returns to red)*
+     EFFECT_1 sparks (burst, weightless)* · EFFECT_2 thruster puffs* · AMBIENT twinkling stars, rotating planet + clouds*
+     SHOTS slow pan along the station with the traverse, hold on the repair, pan back* · FOREGROUND off* (space)
+   ========================================================================== */
+const TITLE = 'Orbit Repair';
+const W = 320, H = 180, IMG_TOP = 0, IMG_BOT = 180;             // full frame
+const LOOP_FRAMES = 2400;                                       // 40 s
+const SEED = 3, OUTPUT_MODE = 'loop', STILL_T = 18.4, DEBUG_KEYS = true, EXPORT_SCALES = [1, 4];
+const WW = 400;
+
+const PAL_HEX = [
+  '#030308', '#0a0a14', '#0f1024', '#16183a',                   // 0-3   space blacks
+  '#2a1f4e', '#4a2a6a', '#1f4a5e',                              // 4-6   nebula
+  '#ffffff', '#a8b0d8', '#5a6090',                              // 7-9   stars
+  '#fff4c8', '#f0c060',                                         // 10-11 sun glow
+  '#1a4a8a', '#2a6ab0', '#0e2a50', '#5ab0e8', '#b8e8ff',        // 12-16 planet: ocean, ocean lit, night, limb, limb bright
+  '#e8f0f8', '#8aa0c0', '#2a3a5a',                              // 17-19 clouds: lit, shade, night
+  '#6a8a4a', '#3a5a3a', '#ffc860',                              // 20-22 land lit, land, city lights
+  '#f0f0f4', '#b8bcc8', '#6a6e80', '#2a2c3a',                   // 23-26 hull / suit: lit -> near-black
+  '#f0c850', '#b0842a', '#5a4020',                              // 27-29 gold foil
+  '#3a5ab8', '#1e2e6a', '#10183a', '#8ab0ff',                   // 30-33 solar cells: edge, cell, shade, glint
+  '#9a9aa8', '#5a5a6a',                                         // 34-35 truss metal
+  '#ff4a3a', '#4aff7a', '#ffd890',                              // 36-38 beacons red, green, warm window
+  '#ffcc40', '#b07a18',                                         // 39-40 visor
+  '#d04030',                                                    // 41    suit stripe
+  '#4ab8ff', '#cfefff',                                         // 42-43 drone eye / arc light
+  '#ffe8a0', '#f08a30',                                         // 44-45 sparks
+  '#d8e0f0'                                                     // 46    thruster puff
+];
+const K0 = 0, K1 = 1, SP0 = 2, SP1 = 3, NB0 = 4, NB1 = 5, NB2 = 6, ST0 = 7, ST1 = 8, ST2 = 9, SN0 = 10, SN1 = 11,
+      PL0 = 12, PL1 = 13, PL2 = 14, PL3 = 15, PL4 = 16, CL0 = 17, CL1 = 18, CL2 = 19, LN0 = 20, LN1 = 21, CT0 = 22,
+      HL0 = 23, HL1 = 24, HL2 = 25, HL3 = 26, GD0 = 27, GD1 = 28, GD2 = 29, SL0 = 30, SL1 = 31, SL2 = 32, SL3 = 33,
+      TR0 = 34, TR1 = 35, BR0 = 36, BG0 = 37, WN0 = 38, VS0 = 39, VS1 = 40, RD0 = 41, DR0 = 42, DR1 = 43, SPK = 44, SPK2 = 45, TH0 = 46;
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+
+// ---------- remap tables ----------
+const SHADE = makeLUT([HL0, HL1, HL1, HL2, HL2, HL3, HL3, K1, GD0, GD1, GD1, GD2, GD2, K1, SL0, SL1, SL1, SL2, SL2, K1, SL3, SL0,
+  TR0, TR1, TR1, HL3, VS0, VS1, VS1, GD2, RD0, GD2, DR0, SL1, DR1, DR0, ST0, ST1, ST1, ST2, SP1, SP0, SP0, K1, PL1, PL0, PL0, PL2,
+  CL0, CL1, CL1, CL2, LN0, LN1, TH0, HL2, SPK, SPK2, WN0, GD1]);
+const LIGHT = makeLUT([K1, HL3, HL3, HL2, HL2, HL1, HL1, HL0, GD2, GD1, GD1, GD0, SL2, SL1, SL1, SL0, SL0, SL3, TR1, TR0, VS1, VS0,
+  SP0, SP1, SP1, NB0, PL2, PL0, PL0, PL1, PL1, PL3, CL2, CL1, CL1, CL0, ST2, ST1, ST1, ST0, SPK2, SPK]);
+// the welding arc's colour: surfaces near the tip turn cool white-cyan
+const ARC = makeLUT([HL3, DR0, HL2, DR0, HL1, DR1, HL0, DR1, TR1, DR0, TR0, DR1, SL2, SL1, SL1, DR0, SL0, DR1, GD2, HL2, GD1, HL1, GD0, HL0, K1, SL2]);
+const FLARE = makeLUT([K0, SP1, K1, SP1, SP0, SP1, SP1, NB0, NB0, NB1, PL0, PL1, PL2, PL0, PL1, PL3, CL2, CL1, SL2, SL1, SL1, SL0, ST2, ST1]);
+NORIM[VS0] = NORIM[VS1] = NORIM[GD0] = NORIM[GD1] = 1;             // the visor and the foil keep their own highlight
+
+// ---------- isometric projection (2:1 tiles, 18 px per tile of height) ----------
+const OX = 140, OY = 50, ZS = 18;
+let PXo = 0, PYo = 0;
+function P(i, j, z) { PXo = OX + (i - j) * 16; PYo = OY + (i + j) * 8 - z; }
+const SUNI = -0.5, SUNJ = 0.5, SUNZ = 0.7;                            // hard key light from screen-left and above
+const STA = new Uint8Array(WW * H), WINGM = new Uint8Array(WW * H);
+function band(nl, x, y) { nl += ((bay(x, y) + 0.5) / 16 - 0.5) * 0.08; return nl > 0.62 ? 0 : nl > 0.25 ? 1 : nl > -0.05 ? 2 : 3; }
+const HULL = new Uint8Array([HL0, HL1, HL2, HL3]), FOIL = new Uint8Array([GD0, GD1, GD2, HL3]);
+
+// ---------- backdrop: stars + nebula (parallax 0.1), the sun and its flare (screen), the planet (parallax 0.3) ----------
+const P_STAR = 0.1, P_PLAN = 0.3, STW = W + Math.ceil((WW - W) * P_STAR), PLW = W + Math.ceil((WW - W) * P_PLAN);
+const STARS = new Uint8Array(STW * H);
+const TW_N = 36, TWX = new Int16Array(TW_N), TWY = new Int16Array(TW_N), TWK = new Uint8Array(TW_N);
+function vnoise(x, y, px) {                                           // periodic value noise (period px in x)
+  const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const h = (a, b) => hash((((a % px) + px) % px) * 7919 + b * 104729 + 17);
+  return lerp(lerp(h(xi, yi), h(xi + 1, yi), ux), lerp(h(xi, yi + 1), h(xi + 1, yi + 1), ux), uy);
+}
+function bakeStars() {
+  STARS.fill(SP0);
+  for (let y = 0; y < H; y++) for (let x = 0; x < STW; x++) {          // nebula: a diagonal band of dithered wisps (upper right)
+    const d = (x * 0.55 - y + 20) / 60, n = vnoise(x / 22, y / 14, 1000) * 0.7 + vnoise(x / 9, y / 7, 1000) * 0.3;
+    const v = Math.exp(-d * d * 3) * n * 1.4 - 0.18;
+    if (v <= 0) continue;
+    const lvl = v * 40, i = y * STW + x;
+    STARS[i] = lvl > 20 ? (n > 0.62 ? NB1 : NB0) : lvl > 10 ? (lvl - 10) * 1.6 > bay(x, y) ? (n > 0.55 ? NB2 : NB0) : SP1 : lvl * 1.6 > bay(x, y) ? SP1 : SP0;
+  }
+  for (let k = 0; k < 170; k++) {
+    const x = Math.floor(rnd() * STW), y = Math.floor(rnd() * H), b = rnd();
+    STARS[y * STW + x] = b > 0.93 ? ST0 : b > 0.7 ? ST1 : ST2;
+    if (b > 0.985 && x > 1 && x < STW - 1) { STARS[y * STW + x - 1] = ST2; STARS[y * STW + x + 1] = ST2; }
+    if (k < TW_N) { TWX[k] = x; TWY[k] = y; TWK[k] = 3 + (k % 5); }
+  }
+}
+// planet: per-pixel sphere coordinates and sun term are baked; the maps scroll (whole cycles per loop) for rotation
+const PCX = 44, PCY = 352, PR = 232, TXW = 1024, TXH = 256, LAND_P = 128, CLOUD_P = 256;
+const PLU = new Int16Array(PLW * H), PLV = new Uint8Array(PLW * H), PLD = new Int8Array(PLW * H), PLE = new Uint8Array(PLW * H);
+const LANDT = new Uint8Array(TXW * TXH), CLOUDT = new Uint8Array(TXW * TXH);
+function bakePlanet() {
+  const sx = -0.86, sy = -0.3, sz = 0.2;                              // grazing: the terminator crosses the visible cap
+  for (let y = 0; y < H; y++) for (let x = 0; x < PLW; x++) {
+    const i = y * PLW + x, dx = (x - PCX) / PR, dy = (y - PCY) / PR, r2 = dx * dx + dy * dy;
+    if (r2 > 1.06) { PLE[i] = 0; continue; }
+    if (r2 >= 1) { PLE[i] = 2; PLD[i] = Math.round(clamp(-(dx * sx + dy * sy) * 100, -100, 100)); continue; }   // atmosphere halo
+    const nz = Math.sqrt(1 - r2), lat = Math.asin(clamp(dy * 0.94 + nz * 0.34, -1, 1)), lon = Math.atan2(dx, nz * 0.94 - dy * 0.34);
+    PLE[i] = r2 > 0.955 ? 3 : 1;
+    PLU[i] = Math.round((lon / TAU + 1) * TXW) % TXW; PLV[i] = clamp(Math.round((lat / Math.PI + 0.5) * (TXH - 1)), 0, TXH - 1);
+    PLD[i] = Math.round(clamp((dx * sx + dy * sy + nz * sz) * 100, -100, 100));
+  }
+  for (let v = 0; v < TXH; v++) for (let u = 0; u < TXW; u++) {
+    const lat = Math.abs(v / TXH - 0.5) * 2;
+    const ln = vnoise(u / 16, v / 12, LAND_P / 16) * 0.65 + vnoise(u / 8, v / 6, LAND_P / 8) * 0.35;      // periods divide the scroll per loop
+    LANDT[v * TXW + u] = lat > 0.86 ? 2 : ln > 0.58 ? 1 : 0;           // 0 ocean, 1 land, 2 ice
+    const cn = vnoise(u / 32, v / 6, CLOUD_P / 32) * 0.6 + vnoise(u / 16, v / 3, CLOUD_P / 16) * 0.4;
+    CLOUDT[v * TXW + u] = cn > 0.6 ? 2 : cn > 0.53 ? 1 : 0;
+  }
+}
+function drawPlanet(cam) {
+  const off = Math.round(cam * P_PLAN), rl = Math.round(LAND_P * gT / LOOP), rc = Math.round(CLOUD_P * gT / LOOP);
+  for (let y = 100; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * PLW + x + off, e = PLE[i]; if (!e) continue;
+    const d = PLD[i], o = y * W + x;
+    if (e === 2) { if (d > 10 && (d > 45 || d * 0.3 > bay(x, y))) FB[o] = d > 60 ? PL3 : PL0; continue; }
+    const u = PLU[i], row = PLV[i] * TXW, land = LANDT[row + ((u + rl) & (TXW - 1))], cl = CLOUDT[row + ((u + rc) & (TXW - 1))];
+    const dd = d + ((bay(x, y) + 0.5) / 16 - 0.5) * 12;
+    let c;
+    if (dd < 0) {                                                     // night side: dark ocean, city lights on land
+      c = cl === 2 ? CL2 : land === 1 ? (hash(u * 131 + PLV[i]) > 0.93 && dd < -8 ? CT0 : K1) : PL2;
+    } else if (cl === 2 || (cl === 1 && ((x + y) & 1))) c = dd > 22 ? CL0 : CL1;
+    else if (land === 2) c = dd > 22 ? CL0 : CL1;
+    else if (land === 1) c = dd > 30 ? LN0 : LN1;
+    else c = dd > 42 ? PL1 : PL0;
+    if (e === 3 && dd > 4) c = dd > 34 ? PL4 : PL3;                     // bright limb on the day side
+    FB[o] = c;
+  }
+}
+const SUNX = 17, SUNY = 15;
+function drawSun() {
+  target(FB, W, H, 0, 0);
+  glow(SUNX + 0.5, SUNY + 0.5, 30, 30, FLARE, 10);
+  ellipse(SUNX + 0.5, SUNY + 0.5, 10, 10, SN1); ellipse(SUNX + 0.5, SUNY + 0.5, 7.5, 7.5, SN0); ellipse(SUNX + 0.5, SUNY + 0.5, 5, 5, ST0);
+  for (let k = 11; k < 26; k++) { if (k < 18 || (k & 1)) { px(SUNX + k, SUNY, k < 16 ? SN0 : SN1); px(SUNX, SUNY + k, k < 16 ? SN0 : SN1); } }
+}
+
+// ---------- the station (baked, back to front) ----------
+const WIN_N = 3, WINX = new Int16Array(WIN_N), WINY = new Int16Array(WIN_N);
+let HATCHX = 0, HATCHY = 0, CELLX = 0, CELLY = 0, JOINTX = 0, JOINTY = 0, BEAR_X = 0, BEAR_Y = 0, BEAG_X = 0, BEAG_Y = 0, STRX = 0, STRY = 0;
+const MC_J = 4, MC_Z = 54, MR = 1.15;                                   // habitation module: axis along i, centre (j 4, z 54 px)
+function spx(x, y, c) { if (x >= 0 && x < WW && y >= 0 && y < H) STA[y * WW + x] = c; }
+function wing(j0, j1, mark) {                                          // horizontal solar blanket pair either side of a boom
+  const z = 54;
+  for (let b = 0; b < 2; b++) {
+    const i0 = b ? 10.82 : 10.1, i1 = b ? 11.4 : 10.68, n = 12;
+    for (let c = 0; c < n; c++) for (let r = 0; r < 2; r++) {
+      const ja = j0 + (j1 - j0) * c / n, jb = j0 + (j1 - j0) * (c + 1) / n, ia = i0 + (i1 - i0) * r / 2, ib = i0 + (i1 - i0) * (r + 1) / 2;
+      P(ia, ja, z); const ax = PXo, ay = PYo; P(ib, ja, z); const bx = PXo, by = PYo; P(ib, jb, z); const cx = PXo, cy = PYo; P(ia, jb, z); const dx = PXo, dy = PYo;
+      target(STA, WW, H, 0, 0);
+      quad(ax, ay, bx, by, cx, cy, dx, dy, SL1);
+      line(ax, ay, bx, by, SL0); line(ax, ay, dx, dy, SL0);              // lit edges (toward the sun)
+      line(bx, by, cx, cy, SL2); line(dx, dy, cx, cy, SL2);
+      const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx)), y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (x >= 0 && x < WW && y >= 0 && y < H && STA[y * WW + x] === SL1) WINGM[y * WW + x] = 1;
+      if (mark && b === 0 && c === 0 && r === 1) { CELLX = Math.round((ax + cx) / 2); CELLY = Math.round((ay + cy) / 2); }
+    }
+  }
+  P(10.75, j0, z); const bx0 = PXo, by0 = PYo; P(10.75, j1, z); target(STA, WW, H, 0, 0); line(bx0, by0, PXo, PYo, TR0);
+  P(10.1, j1, z); const tx0 = PXo, ty0 = PYo; P(11.4, j1, z); line(tx0, ty0, PXo, PYo, TR1);
+}
+function bakeStation() {
+  STA.fill(CLEAR); WINGM.fill(0);
+  wing(3.4, -1.4, false);                                              // wing A (behind the truss)
+  P(10.75, -1.4, 56); BEAG_X = PXo; BEAG_Y = PYo - 1;
+  // radiator fin on the module's back, lit on its +j face
+  for (let i = 0.7; i <= 2.5; i += 0.02) for (let z = 70; z <= 92; z++) { P(i, 3.05, z); spx(Math.round(PXo), Math.round(PYo), (Math.round(i * 50) % 9 === 0) ? HL2 : z > 90 ? HL0 : HL1); }
+  // habitation module: sample the visible half of the cylinder, lit per surface normal, then the dark end cap
+  for (let i = 0; i <= 3; i += 0.018) for (let th = -0.75; th <= 2.5; th += 0.011) {
+    const ct = Math.cos(th), st = Math.sin(th); if (ct + 1.2 * st < 0) continue;
+    P(i, MC_J + MR * ct, MC_Z + MR * ZS * st); const x = Math.round(PXo), y = Math.round(PYo);
+    const nl = SUNJ * ct + SUNZ * st; let b = band(nl, x, y);
+    const seam = Math.abs(i - 0.75) < 0.02 || Math.abs(i - 1.5) < 0.02 || Math.abs(i - 2.25) < 0.02 || i > 2.97;
+    let c = (th > 1.55 && i > 0.2 && i < 2.8) ? FOIL[b] : HULL[Math.min(3, b + (seam ? 1 : 0))];
+    if (Math.abs(th - 0.08) < 0.16 && (Math.abs(i - 0.55) < 0.1 || Math.abs(i - 1.15) < 0.1 || Math.abs(i - 1.75) < 0.1)) c = K1;   // windows
+    spx(x, y, c);
+  }
+  for (let r = 0; r <= MR; r += 0.02) for (let ph = 0; ph < TAU; ph += 0.02) {
+    P(3, MC_J + r * Math.cos(ph), MC_Z + r * ZS * Math.sin(ph)); const x = Math.round(PXo), y = Math.round(PYo);
+    spx(x, y, r > MR - 0.05 ? HL2 : Math.abs(r - 0.62) < 0.05 ? HL2 : HL3);
+  }
+  for (let k = 0; k < WIN_N; k++) { P(0.55 + k * 0.6, MC_J + MR * Math.cos(0.08), MC_Z + MR * ZS * Math.sin(0.08)); WINX[k] = Math.round(PXo); WINY[k] = Math.round(PYo); }
+  P(2.3, MC_J + MR * Math.cos(0.32), MC_Z + MR * ZS * Math.sin(0.32)); HATCHX = Math.round(PXo); HATCHY = Math.round(PYo);
+  P(0.08, MC_J, MC_Z + MR * ZS + 2); BEAR_X = Math.round(PXo); BEAR_Y = Math.round(PYo);
+  // antenna mast + dish on the module top
+  target(STA, WW, H, 0, 0);
+  P(1.1, 3.7, MC_Z + MR * ZS - 1); const mx = Math.round(PXo), my = Math.round(PYo);
+  vline(mx, my - 12, my, TR1); px(mx - 1, my - 12, TR0);
+  ellipse(mx - 3.5, my - 15, 5.5, 3, HL1); ellipse(mx - 3.5, my - 16, 4.5, 2, HL0); line(mx - 3, my - 15, mx + 1, my - 20, TR1);
+  STRX = mx + 1; STRY = my - 21;
+  // truss: back members, then front members; see-through lattice with a lit front-top longeron
+  const TJ0 = 3.72, TJ1 = 4.28, TZ0 = 48, TZ1 = 60, TI0 = 3.0, TI1 = 10.45, STEP_I = 0.55;
+  const L = (i0, j0, z0, i1, j1, z1, c) => { P(i0, j0, z0); const x0 = PXo, y0 = PYo; P(i1, j1, z1); line(x0, y0, PXo, PYo, c); };
+  L(TI0, TJ0, TZ0, TI1, TJ0, TZ0, HL3); L(TI0, TJ0, TZ1, TI1, TJ0, TZ1, TR1);
+  for (let i = TI0; i < TI1 - 0.01; i += STEP_I) { L(i, TJ0, TZ0, i, TJ0, TZ1, TR1); L(i, TJ0, TZ0, i, TJ1, TZ0, HL3); L(i, TJ0, TZ1, Math.min(TI1, i + STEP_I), TJ1, TZ1, TR1); }
+  L(TI0, TJ1, TZ0, TI1, TJ1, TZ0, TR1); L(TI0, TJ1, TZ1, TI1, TJ1, TZ1, TR0);
+  for (let i = TI0; i <= TI1 + 0.01; i += STEP_I) { L(i, TJ1, TZ0, i, TJ1, TZ1, TR0); L(i, TJ0, TZ1, i, TJ1, TZ1, TR0); if (i + STEP_I <= TI1 + 0.01) L(i, TJ1, TZ0, i + STEP_I, TJ1, TZ1, TR1); }
+  // handrail the astronaut follows, on stand-offs above the front-top longeron
+  L(3.2, 4.45, 64, 10.2, 4.45, 64, GD1);
+  for (let i = 3.2; i <= 10.25; i += 1) L(i, 4.35, 60, i, 4.45, 64, TR1);
+  // rotary joint: three faces, top lit, +j face lit, +i face near-black
+  const JI0 = 10.45, JI1 = 11.05, JJ0 = 3.55, JJ1 = 4.45, JZ0 = 44, JZ1 = 64;
+  P(JI0, JJ0, JZ1); const a1 = PXo, a2 = PYo; P(JI1, JJ0, JZ1); const b1 = PXo, b2 = PYo; P(JI1, JJ1, JZ1); const c1 = PXo, c2 = PYo; P(JI0, JJ1, JZ1); const d1 = PXo, d2 = PYo;
+  quad(a1, a2, b1, b2, c1, c2, d1, d2, HL0);
+  P(JI0, JJ1, JZ0); const e1 = PXo, e2 = PYo; P(JI1, JJ1, JZ0); const f1 = PXo, f2 = PYo;
+  quad(d1, d2, c1, c2, f1, f2, e1, e2, HL1);
+  P(JI1, JJ0, JZ0); const g1 = PXo, g2 = PYo;
+  quad(c1, c2, b1, b2, g1, g2, f1, f2, HL3);
+  line(d1, d2, c1, c2, HL0); line(c1, c2, f1, f2, HL2);
+  P(10.75, JJ1, 56); JOINTX = Math.round(PXo); JOINTY = Math.round(PYo);
+  wing(4.6, 9.4, true);                                                // wing B (in front)
+}
+
+// ---------- timeline (40 s) ----------
+// hatch opens 1.2-2.4 · out 2.4-4.4 · traverse 4.4-14.4 · to the joint 14.4-16 · weld 16-21 · take the cell 21-22.4 (hand-over at 22.4)
+// fit 22.4-23.5 (light turns green) · look at the planet 24-27 · back 27-37 · in 37-38.3 · hatch closes 38.4-39.4 · micrometeoroid 38.0
+const T_HO0 = 1.2, T_HO1 = 2.4, T_TRV0 = 4.4, T_TRV1 = 14.4, T_WELD0 = 16, T_WELD1 = 21, T_PASS = 22.4, T_FIT = 23.5, T_LOOK0 = 24, T_LOOK1 = 27;
+const T_BACK1 = 37, T_IN = 38.3, T_HC0 = 38.4, T_HC1 = 39.4, T_HIT = 38.0;
+function kf(t, t0, t1, a, b) { return t <= t0 ? a : t >= t1 ? b : lerp(a, b, easeSine((t - t0) / (t1 - t0))); }
+function camAt(t) { return t < 16 ? kf(t, 4.4, 16, 20, 62) : kf(t, 27, T_BACK1, 62, 20); }
+// waypoints (i, j, z of the feet): inside the hatch, outside it, the rail's two ends, the work spot at the joint
+const WPI = new Float32Array([2.3, 2.5, 3.3, 10.05, 10.28]), WPJ = new Float32Array([5.0, 5.6, 4.85, 4.85, 5.0]), WPZ = new Float32Array([60, 64, 66, 66, 66]);
+const AS = { i: 0, j: 0, z: 0, vis: 0, face: 0, flip: false, arm: 0, work: 0, hold: 0 };   // face 0 = SE sprite, 1 = NE sprite
+function seg(a, b, u) { AS.i = lerp(WPI[a], WPI[b], u); AS.j = lerp(WPJ[a], WPJ[b], u); AS.z = lerp(WPZ[a], WPZ[b], u); }
+function astroAt(t) {
+  AS.vis = t > 2.45 && t < T_IN ? 1 : 0; AS.face = 0; AS.flip = false; AS.arm = 0; AS.work = 0; AS.hold = 0;
+  if (t < 3.4) seg(0, 1, easeSine((t - 2.4) / 1.0));
+  else if (t < T_TRV0) seg(1, 2, easeSine((t - 3.4) / 1.0));
+  else if (t < T_TRV1) {                                              // hand over hand: pull-and-glide surges on top of an eased traverse
+    const u = (t - T_TRV0) / (T_TRV1 - T_TRV0), e = easeSine(u), surge = 0.006 * Math.sin(TAU * u * 10);
+    seg(2, 3, clamp(e + surge * Math.sin(Math.PI * u), 0, 1)); AS.arm = (t - T_TRV0) % 1;
+  } else if (t < T_WELD0) seg(3, 4, easeSine((t - T_TRV1) / (T_WELD0 - T_TRV1)));
+  else if (t < T_BACK1 - 10) {
+    seg(4, 4, 0);
+    AS.work = t < T_WELD1 ? 1 : 0;
+    AS.hold = t >= T_PASS && t < T_FIT ? 1 : 0;
+    if (t >= T_LOOK0 && t < T_LOOK1) { AS.flip = true; }               // turns to look down at the planet (SW = mirrored SE)
+  } else if (t < T_BACK1) {
+    const u = (t - 27) / (T_BACK1 - 27); AS.face = 1; AS.flip = true; AS.arm = (t - 27) % 1;   // going back: NW = mirrored NE
+    if (u < 0.1) seg(4, 3, easeSine(u / 0.1)); else seg(3, 2, easeSine((u - 0.1) / 0.9));
+  } else { AS.face = 1; AS.flip = true; if (t < 37.7) seg(2, 1, easeSine((t - 37) / 0.7)); else seg(1, 0, easeSine((t - 37.7) / 0.6)); }
+}
+// drone: docked on the module top, flies to the joint, hands over the cell at T_PASS, backs off, flies home
+const DK_I = 1.7, DK_J = 3.3, DK_Z = 80, DJ_I = 10.9, DJ_J = 5.7, DJ_Z = 80, DP_I = 10.55, DP_J = 5.35, DP_Z = 74;
+const DRN = { i: 0, j: 0, z: 0, carry: 0, dir: 1 };
+function droneAt(t) {
+  const R = DRN; R.carry = t < T_PASS ? 1 : 0; R.dir = 1;
+  let u;
+  if (t < 7) { R.i = DK_I; R.j = DK_J; R.z = DK_Z; }
+  else if (t < 15) { u = easeSine((t - 7) / 8); R.i = lerp(DK_I, DJ_I, u); R.j = lerp(DK_J, DJ_J, u); R.z = lerp(DK_Z, DJ_Z, u) + 10 * Math.sin(Math.PI * u); }
+  else if (t < 21) { R.i = DJ_I; R.j = DJ_J; R.z = DJ_Z + 1.5 * Math.sin(TAU * (t - 15) / 3); }
+  else if (t < T_PASS + 0.8) { u = easeSine((t - 21) / 1.2); if (t > T_PASS) u = 1 - easeSine((t - T_PASS) / 0.8) * 0.6; R.i = lerp(DJ_I, DP_I, u); R.j = lerp(DJ_J, DP_J, u); R.z = lerp(DJ_Z, DP_Z, u); }
+  else if (t < 30) { R.i = lerp(DJ_I, DP_I, 0.4); R.j = lerp(DJ_J, DP_J, 0.4); R.z = lerp(DJ_Z, DP_Z, 0.4) + 1.5 * Math.sin(TAU * (t - 23.2) / 3.4); }
+  else { u = easeSine((t - 30) / 8.6); R.dir = -1; const i0 = lerp(DJ_I, DP_I, 0.4), j0 = lerp(DJ_J, DP_J, 0.4), z0 = lerp(DJ_Z, DP_Z, 0.4); R.i = lerp(i0, DK_I, u); R.j = lerp(j0, DK_J, u); R.z = lerp(z0, DK_Z, u) + 10 * Math.sin(Math.PI * u); if (t >= 38.6) { R.i = DK_I; R.j = DK_J; R.z = DK_Z; } }
+}
+function cellNew(t) { return t >= T_FIT && t < T_HIT + 0.12; }
+
+// ---------- astronaut sprites (SE front three-quarter, NE back three-quarter), bulky white EVA suit ----------
+const ABW = 20, ABH = 24, AAX = 9, AAY = 22;
+const ABUF = new Uint8Array(ABW * ABH);
+let TOOLX = 0, TOOLY = 0, HANDX = 0, HANDY = 0;
+function drawAstro(face, arm, work, hold) {
+  ABUF.fill(CLEAR); target(ABUF, ABW, ABH, AAX, AAY);
+  const sw = arm < 0.5 ? arm * 2 : 2 - arm * 2;                       // 0..1..0 arm swing
+  // legs (floating, one bent), boots, red stripe on the right leg
+  rect(-3, -8, 2, 6, HL1); rect(0, -8, 2, 5, HL1); px(1, -3, HL1); px(2, -3, HL1);
+  rect(-3, -2, 2, 2, HL2); rect(1, -3, 2, 2, HL2);
+  vline(1, -8, -4, RD0);
+  // torso + backpack (PLSS)
+  if (face === 0) { rect(-5, -15, 3, 8, HL2); rect(-3, -16, 6, 8, HL1); px(-1, -12, HL2); px(0, -12, RD0); px(1, -12, HL2); }
+  else { rect(-4, -16, 7, 9, HL1); rect(-3, -15, 5, 6, HL2); hline(-3, 1, -12, HL1); px(-2, -14, TR1); px(0, -14, TR1); }
+  // helmet + visor
+  ellipse(0, -18.5, 3.4, 3.2, HL0);
+  if (face === 0) { rect(0, -20, 3, 3, VS1); px(1, -20, VS0); px(2, -19, VS0); px(0, -17, VS1); }
+  else { px(-1, -21, HL1); px(0, -21, HL1); }
+  // arms: reaching hand over hand, or forward to work
+  if (work || hold) {
+    line(1, -14, 5, -11, HL1); line(1, -13, 5, -10, HL1); line(-2, -14, 4, -9, HL1);
+    HANDX = 6; HANDY = -10;
+    if (work) { line(5, -11, 8, -9, TR1); px(8, -9, TR0); TOOLX = 9; TOOLY = -8; }
+  } else {
+    const ay = Math.round(-10 - 4 * sw), by = Math.round(-14 + 4 * sw);
+    line(2, -14, 5, ay, HL1); line(2, -13, 5, ay + 1, HL1);
+    line(-3, -14, face === 0 ? 3 : -5, by, HL1);
+    HANDX = 5; HANDY = ay;
+  }
+}
+// ---------- drone ----------
+const DBW = 12, DBH = 10, DAX = 6, DAY = 5, DBUF = new Uint8Array(DBW * DBH);
+function drawDrone() {
+  DBUF.fill(CLEAR); target(DBUF, DBW, DBH, DAX, DAY);
+  ellipse(0, 0, 4.1, 3.4, TR1); ellipse(0, -0.5, 3.2, 2.4, HL2); hline(-2, 1, -3, TR0);          // dark grey shell so it reads against the white hull
+  hline(-4, 3, 1, GD1); px(-5, 0, HL3); px(4, 0, HL3); px(-5, 1, HL3); px(4, 1, HL3); hline(-1, 1, 3, HL3);
+}
+
+// ---------- particles: weld sparks, thruster puffs, impact debris (one pool, weightless) ----------
+const PN = 140, PX_ = new Float32Array(PN), PY_ = new Float32Array(PN), PVX = new Float32Array(PN), PVY = new Float32Array(PN), PAGE = new Float32Array(PN), PLIFE = new Float32Array(PN), PK = new Uint8Array(PN);
+let pHead = 0;
+function emit(x, y, vx, vy, life, k) { const i = pHead; pHead = (pHead + 1) % PN; PX_[i] = x; PY_[i] = y; PVX[i] = vx; PVY[i] = vy; PAGE[i] = 0; PLIFE[i] = life; PK[i] = k; }
+function stepParticles() { for (let i = 0; i < PN; i++) { if (PLIFE[i] <= 0) continue; PAGE[i] += STEP; if (PAGE[i] >= PLIFE[i]) { PLIFE[i] = 0; continue; } PX_[i] += PVX[i] * STEP; PY_[i] += PVY[i] * STEP; if (PK[i] === 1) { PVX[i] *= 0.96; PVY[i] *= 0.96; } } }
+function drawParticles(cam) {
+  target(FB, W, H, 0, 0);
+  for (let i = 0; i < PN; i++) {
+    if (PLIFE[i] <= 0) continue;
+    const a = PAGE[i] / PLIFE[i], x = Math.round(PX_[i]) - cam, y = Math.round(PY_[i]);
+    if (PK[i] === 0) { px(x, y, a < 0.3 ? ST0 : a < 0.6 ? SPK : SPK2); if (a < 0.25) px(x - Math.sign(PVX[i]), y - Math.sign(PVY[i]), SPK); }
+    else if (PK[i] === 1) { if (a < 0.7 || ((x + y) & 1)) px(x, y, a < 0.4 ? TH0 : HL2); }
+    else px(x, y, a < 0.5 ? HL1 : HL2);
+  }
+}
+
+// ---------- bake, update, render ----------
+function bake() { bakeStars(); bakePlanet(); bakeStation(); drawDrone(); buildVignette(1); }
+let camF = 0, camI = 0, lastPose = -1, aSX = 0, aSY = 0, dSX = 0, dSY = 0, prevDI = 0, prevDJ = 0;
+function update() {
+  const t = gT;
+  camF = camAt(t); camI = Math.round(camF);
+  const slot = Math.floor(frame / 5);
+  if (slot !== lastPose) { lastPose = slot; astroAt(slot * 5 / 60); drawAstro(AS.face, AS.arm, AS.work, AS.hold); }
+  astroAt(t); P(AS.i, AS.j, AS.z); aSX = Math.round(PXo - camF); aSY = Math.round(PYo);
+  droneAt(t); P(DRN.i, DRN.j, DRN.z); dSX = Math.round(PXo - camF); dSY = Math.round(PYo);
+  // thruster puffs whenever the drone changes speed
+  const vi = DRN.i - prevDI, vj = DRN.j - prevDJ; prevDI = DRN.i; prevDJ = DRN.j;
+  if ((frame % 6) === 0 && (vi * vi + vj * vj) > 1e-5) { const h = hash(frame * 5 + 3); emit(camI + dSX - Math.sign(vi - vj) * 5, dSY + 1, -Math.sign(vi - vj) * (12 + h * 10), (h - 0.5) * 8, 0.45, 1); }
+  // welding: bursts of sparks from the tool tip
+  if (AS.work && t >= T_WELD0 && (frame % 12) < 3) {
+    for (let q = 0; q < 3; q++) { const h = hash(frame * 11 + q), a = h * TAU, v = 25 + hash(frame * 3 + q + 7) * 50; emit(camI + aSX + (AS.flip ? -TOOLX : TOOLX), aSY + TOOLY, Math.cos(a) * v, Math.sin(a) * v, 0.3 + hash(frame + q * 17) * 0.5, 0); }
+  }
+  // micrometeoroid strike: debris from the cell
+  if (frame === Math.round(T_HIT * 60) + 7) for (let q = 0; q < 10; q++) { const a = hash(q * 29 + 1) * TAU, v = 10 + hash(q * 13 + 2) * 26; emit(CELLX, CELLY, Math.cos(a) * v, Math.sin(a) * v - 6, 1.2 + hash(q) * 1.4, 2); }
+  stepParticles();
+}
+const REDH = makeLUT([SP0, RD0, SP1, RD0, K1, GD2, HL3, GD2, HL2, RD0, HL1, RD0, TR1, RD0, SL2, GD2, SL1, RD0]);
+const GRNH = makeLUT([SP0, LN1, SP1, LN1, K1, LN1, HL3, LN1, HL2, LN1, SL2, LN1, SL1, LN1, TR1, LN1]);
+const WINH = makeLUT([HL3, GD2, HL2, GD1, HL1, GD0, K1, GD2, SP0, GD2, TR1, GD1]);
+function beacon(x, y, on, lut, c) { if (!on) { px(x, y, HL3); return; } glow(x + 0.5, y + 0.5, 5, 5, lut, 10); px(x, y, c); px(x - 1, y, c); px(x + 1, y, c); px(x, y - 1, c); px(x, y + 1, c); px(x, y, ST0); }
+function render() {
+  const t = gT;
+  // backdrop
+  const so = Math.round(camF * P_STAR);
+  for (let y = 0; y < H; y++) FB.set(STARS.subarray(y * STW + so, y * STW + so + W), y * W);
+  for (let k = 0; k < TW_N; k++) { const x = TWX[k] - so; if (x < 0 || x >= W) continue; const v = cyc(TWK[k], k * 1.7); FB[TWY[k] * W + x] = v > 0.6 ? ST0 : v > -0.2 ? ST1 : ST2; }
+  drawPlanet(camF);
+  drawSun();
+  // the station
+  for (let y = 0; y < H; y++) { const s = y * WW + camI, d = y * W; for (let x = 0; x < W; x++) { const v = STA[s + x]; if (v !== CLEAR) FB[d + x] = v; } }
+  // sun glint sweeping across the solar wings (two passes per loop)
+  const gp = ((gT / LOOP) * 2 % 1) * 520 - 120;
+  for (let y = 60; y < H; y++) for (let x = 0; x < W; x++) { const wx = x + camI; if (!WINGM[y * WW + wx]) continue; const d = wx + y * 2 - gp - 200; if (d > 0 && d < 9) { const i = y * W + x; FB[i] = d > 3 && d < 6 ? SL3 : SL0; } }
+  target(FB, W, H, -camI, 0);
+  // the cell: cracked (dark, star-shaped crack) or new (a brief sparkle after it's fitted)
+  if (!cellNew(t)) { px(CELLX, CELLY, K1); px(CELLX - 1, CELLY, HL2); px(CELLX + 1, CELLY - 1, HL1); px(CELLX + 2, CELLY + 1, HL2); px(CELLX - 2, CELLY - 1, HL1); px(CELLX, CELLY + 1, K1); px(CELLX - 1, CELLY + 2, HL2); }
+  else if (t < T_FIT + 1.2 && ((frame >> 2) & 1)) { px(CELLX, CELLY, SL3); px(CELLX - 1, CELLY, SL0); px(CELLX + 1, CELLY, SL0); }
+  // cabin windows (warm light spilling onto the hull), beacons, antenna strobe, joint status light
+  for (let k = 0; k < WIN_N; k++) { glow(WINX[k] + 0.5, WINY[k] + 0.5, 5, 4, WINH, 9); px(WINX[k], WINY[k], WN0); px(WINX[k] + 1, WINY[k], WN0); px(WINX[k], WINY[k] - 1, GD0); }
+  beacon(BEAR_X, BEAR_Y, cyc(32, 0) > 0.8, REDH, BR0);
+  beacon(BEAG_X, BEAG_Y, cyc(32, 2.2) > 0.8, GRNH, BG0);
+  const fs = frame % 150; if (fs < 3 || (fs > 8 && fs < 11)) { glow(STRX + 0.5, STRY + 0.5, 6, 6, LIGHT, 12); px(STRX, STRY, ST0); }
+  if (cellNew(t)) beacon(JOINTX, JOINTY, true, GRNH, BG0); else beacon(JOINTX, JOINTY, cyc(40, 0) > 0, REDH, BR0);
+  // hatch: a round door that slides aside, warm light inside while it is open
+  const open = t < T_HO0 ? 0 : t < T_HO1 ? easeSine((t - T_HO0) / (T_HO1 - T_HO0)) : t < T_HC0 ? 1 : t < T_HC1 ? 1 - easeSine((t - T_HC0) / (T_HC1 - T_HC0)) : 0;
+  ellipse(HATCHX + 0.5, HATCHY + 0.5, 3.6, 4.2, HL2);
+  if (open > 0) { ellipse(HATCHX + 0.5, HATCHY + 0.5, 2.6, 3.2, K1); px(HATCHX, HATCHY + 1, WN0); px(HATCHX - 1, HATCHY + 2, GD1); }
+  ellipse(HATCHX + 0.5 + Math.round(open * 5), HATCHY + 0.5 - Math.round(open * 2), 2.6, 3.2, HL1);
+  // tether from the hatch to the astronaut's waist, floating in a loose curve
+  if (AS.vis) {
+    target(FB, W, H, 0, 0);
+    const x0 = HATCHX - camI, y0 = HATCHY, x1 = aSX, y1 = aSY - 10, len = Math.hypot(x1 - x0, y1 - y0), n = Math.max(2, Math.round(len));
+    for (let k = 0; k <= n; k++) { const u = k / n, sg = Math.sin(Math.PI * u) * (6 + len * 0.12), wv = 1.5 * Math.sin(u * TAU * 2 + TAU * 4 * gT / LOOP); px(Math.round(x0 + (x1 - x0) * u - sg * 0.3), Math.round(y0 + (y1 - y0) * u + sg + wv), (k & 3) ? GD1 : GD2); }
+    // the astronaut: hard rim on the sun side, near-black shade, outline on the shadow side
+    const fl = AS.flip;
+    blitLit(ABUF, ABW, ABH, aSX - (fl ? ABW - 1 - AAX : AAX), aSY - AAY, fl, CLEAR, ST0, ST0, K1, 1, 1, SHADE, 2, LIGHT);
+    if (AS.hold) { const hx = aSX + (fl ? -HANDX : HANDX), hy = aSY + HANDY; px(hx, hy, SL1); px(hx + 1, hy, SL0); px(hx, hy + 1, SL1); px(hx + 1, hy + 1, SL1); }
+    if (AS.work && t >= T_WELD0) {                                     // welding arc: flickering cool light on nearby surfaces
+      const tx = aSX + (fl ? -TOOLX : TOOLX), ty = aSY + TOOLY, fk = hash(frame >> 1);
+      glow(tx + 0.5, ty + 0.5, 9 + fk * 5, 7 + fk * 4, ARC, 9 + fk * 5); px(tx, ty, ST0); if (fk > 0.4) { px(tx + 1, ty, DR1); px(tx, ty - 1, DR1); }
+    }
+  }
+  // the drone, its eye, and the cell it carries until the hand-over
+  blitLit(DBUF, DBW, DBH, dSX - DAX, dSY - DAY, false, CLEAR, ST0, ST0, K1, 1, 1, SHADE, 0, LIGHT);
+  target(FB, W, H, 0, 0);
+  glow(dSX + DRN.dir * 2 + 0.5, dSY + 0.5, 3.5, 3, ARC, 8); px(dSX + DRN.dir * 2, dSY, DR0); px(dSX + DRN.dir * 3, dSY, DR1); px(dSX + DRN.dir * 2, dSY - 1, DR0);
+  if (cyc(20, 0.5) > 0.7) px(dSX - DRN.dir * 3, dSY - 2, BR0);          // running light
+  if (DRN.carry) { px(dSX - 1, dSY + 4, SL1); px(dSX, dSY + 4, SL0); px(dSX + 1, dSY + 4, SL1); px(dSX, dSY + 5, SL1); }
+  // micrometeoroid: a streak into the cell, then a flash
+  const fh = frame - Math.round(T_HIT * 60);
+  if (fh >= 0 && fh < 8) { const u = fh / 7, x = Math.round(CELLX - camI + 90 * (1 - u)), y = Math.round(CELLY - 70 * (1 - u)); line(x, y, x + 5, y - 4, SN0); px(x, y, ST0); }
+  if (fh >= 7 && fh < 12) { glow(CELLX - camI + 0.5, CELLY + 0.5, 9, 8, LIGHT, 14); px(CELLX - camI, CELLY, ST0); }
+  drawParticles(camI);
+  // lens ghosts over everything, then a light vignette (no frame bars: full frame)
+  for (let g = 0; g < 3; g++) { const f = g === 0 ? 0.55 : g === 1 ? 0.95 : 1.3, gx = SUNX + (160 - SUNX) * f, gy = SUNY + (90 - SUNY) * f; glow(gx, gy, 3 + g * 2, 3 + g * 2, FLARE, 5); }
+  applyVignette(SHADE);
+}
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

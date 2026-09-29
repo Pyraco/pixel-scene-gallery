@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autumn Pond</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+
+/* ==========================================================================
+   TEST 2 - TOP-DOWN PROJECTION: "Autumn Pond"
+   Resolved options (non-defaults marked *):
+     OUTPUT_MODE loop · LOOP_SECONDS 64* · RESOLUTION 320x180 · FRAME full*
+     WORLD_W 2* · WORLD_H 2* · PROJECTION top-down* · TOPDOWN_STYLE three-quarter · TRAVEL circuit*
+     ENVIRONMENT exterior · SETTING village park pond with a small pier* · SEASON autumn*
+     SET_PIECES pond, gravel loop path, pier, 2 benches, 3 lamp posts, 8 trees, bushes, leaf piles*
+     TIME afternoon* · WEATHER partly-cloudy* · ATMOSPHERE light* · SKY none (top-down)
+     LIGHT_STYLE side-lit* · KEY sun from W* · KEY_VISIBLE no* · SHAFTS subtle* · SHADOWS medium*
+     MOOD gentle, cosy, unhurried* · GRADE auto (amber key / teal shadow) · PALETTE 42
+     SUBJECT_COUNT 2* · S1 old man, flat cap, mustard sweater, walking stick, stroll*
+     S2 corgi (quadruped), companion, trot* · INTERACTION follow* · LOOP_CLOSE circuit*
+     BEATS walk pier -> loop the pond -> dog dashes through a leaf pile -> pause on the pier*
+     EFFECT_1 leaves (burst, from set-piece)* · AMBIENT falling-leaves, ducks*
+     STATE_CHANGES leaf pile scatters and refills* · FOREGROUND corners (edge occluders)*
+     SHOTS follow (2 axes) · LOOP_CAMERA return (circuit) · DITHER soft* · CAMERA_SMOOTHING smooth
+   ========================================================================== */
+const TITLE = 'Autumn Pond';
+const W = 320, H = 180, IMG_TOP = 0, IMG_BOT = 180;
+const LOOP_FRAMES = 3840;                     // 64 s
+const SEED = 3, OUTPUT_MODE = 'loop', STILL_T = 0, DEBUG_KEYS = true, EXPORT_SCALES = [];
+const WW = 640, WH = 360;                     // world size (WORLD_W 2, WORLD_H 2)
+
+const PAL_HEX = [
+  '#0d0b10', '#1f1a24',                                   // 0-1   near-blacks
+  '#d6c064', '#9fa04c', '#6d7a3f', '#3f5445',             // 2-5   grass: sunlit -> teal shadow
+  '#e6d0a4', '#bfa27a', '#8a735b',                        // 6-8   gravel
+  '#b4dde0', '#62a2b3', '#3d7089', '#2a4d66',             // 9-12  water: glint -> deep
+  '#ffd96e', '#f29a3a', '#d0582c', '#8f3a2c', '#5c2f2c', '#b87a35', // 13-18 autumn leaves
+  '#8a6448', '#4e3a33',                                   // 19-20 bark
+  '#c89260', '#7a543c',                                   // 21-22 planks / benches
+  '#3c3a46',                                              // 23    iron
+  '#bcb5aa', '#7a7470',                                   // 24-25 stone
+  '#5f5d50', '#3a3a34',                                   // 26-27 tweed cap
+  '#e4ad3f', '#a8752e',                                   // 28-29 mustard sweater
+  '#4f5a6b', '#333b49',                                   // 30-31 trousers
+  '#f2c6a2', '#c98a6c', '#8e5a4e',                        // 32-34 skin
+  '#f2a24e', '#c46f2c', '#f7eedc',                        // 35-37 corgi fur, shadow, cream
+  '#ffe2a0'                                               // 38    rim (warm)
+];
+const K0 = 0, K1 = 1, G0 = 2, G1 = 3, G2 = 4, G3 = 5, P0 = 6, P1 = 7, P2 = 8, WA0 = 9, WA1 = 10, WA2 = 11, WA3 = 12,
+      L0 = 13, L1 = 14, L2 = 15, L3 = 16, L4 = 17, L5 = 18, B0 = 19, B1 = 20, WD0 = 21, WD1 = 22, IRON = 23,
+      ST0 = 24, ST1 = 25, C0 = 26, C1 = 27, MU0 = 28, MU1 = 29, TR0 = 30, TR1 = 31, SK0 = 32, SK1 = 33, SK2 = 34,
+      D0 = 35, D1 = 36, DW = 37, RIM = 38;
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+
+// ---------- remap tables ----------
+const SHADE = makeLUT([G0, G1, G1, G2, G2, G3, G3, K1, P0, P1, P1, P2, P2, B1, WA0, WA1, WA1, WA2, WA2, WA3, WA3, K1,
+  L0, L1, L1, L2, L2, L3, L3, L4, L4, K1, L5, B1, B0, B1, B1, K1, WD0, WD1, WD1, B1, IRON, K1, ST0, ST1, ST1, IRON,
+  C0, C1, C1, K1, MU0, MU1, MU1, B1, TR0, TR1, TR1, K1, SK0, SK1, SK1, SK2, SK2, B1, D0, D1, D1, B1, DW, ST0, RIM, L0, K1, K0]);
+const LIGHT = makeLUT([G3, G2, G2, G1, G1, G0, G0, P0, P2, P1, P1, P0, WA3, WA2, WA2, WA1, WA1, WA0,
+  L4, L3, L3, L2, L2, L1, L1, L0, B1, B0, WD1, WD0, ST1, ST0, D1, D0, MU1, MU0, TR1, TR0, SK1, SK0, C1, C0]);
+
+// ---------- world layout (world pixels, 640x360) ----------
+const PC_X = 320, PC_Y = 165, PRX = 112, PRY = 62;                  // pond
+const CX = 320, CY = 168, RX = 150, RY = 96, PW = 5;                 // gravel loop path
+const PIER_X0 = 312, PIER_X1 = 327, PIER_Y0 = 222, PIER_Y1 = 262;
+const SUN_VX = 0.85, SUN_VY = 0.15;                                  // shadow offset per px of height (sun from the west)
+const TREE_N = 8;
+const TX = new Int16Array([150, 482, 566, 104, 414, 206, 606, 36]), TY = new Int16Array([100, 62, 222, 252, 318, 306, 110, 160]);
+const TRAD = new Uint8Array([40, 44, 38, 36, 42, 30, 32, 30]), TCOL = new Uint8Array([1, 0, 2, 0, 1, 2, 0, 1]);
+const CAN_H = 30;                                                    // canopy height above the trunk base
+const BUSH = [260, 60, 9, 382, 56, 8, 128, 192, 10, 522, 282, 9, 296, 318, 8, 560, 152, 7, 70, 322, 10, 470, 208, 6];
+const BENCH = [236, 285, 430, 50];
+const LAMP = [178, 206, 462, 128, 330, 58];
+function pondR(th) { return 1 + 0.06 * Math.sin(3 * th) + 0.04 * Math.sin(5 * th + 1); }
+function pondDepth(x, y) {                                            // >0 inside the pond (0 at shore, ~1 at centre)
+  const dx = (x - PC_X) / PRX, dy = (y - PC_Y) / PRY, r = Math.sqrt(dx * dx + dy * dy), R = pondR(Math.atan2(dy, dx));
+  return 1 - r / R;
+}
+function pathDist(x, y) {                                             // approx pixel distance from the path centre line
+  const dx = (x - CX) / RX, dy = (y - CY) / RY, q = Math.sqrt(dx * dx + dy * dy), th = Math.atan2(dy, dx);
+  const re = Math.sqrt(RX * RX * Math.cos(th) * Math.cos(th) + RY * RY * Math.sin(th) * Math.sin(th));
+  return Math.abs(q - 1) * re;
+}
+function onPier(x, y) { return x >= PIER_X0 && x <= PIER_X1 && y >= PIER_Y0 && y <= PIER_Y1; }
+
+const GROUND = new Uint8Array(WW * WH), SMASK = new Uint8Array(WW * WH), CSH = new Uint8Array(WW * WH);
+function markSh(x, y, lvl, canopy) {
+  x = ri(x); y = ri(y);
+  if (x < 0 || y < 0 || x >= WW || y >= WH) return;
+  const i = y * WW + x; if (lvl > SMASK[i]) SMASK[i] = lvl;
+  if (canopy && lvl > 9) CSH[i] = 1;
+}
+function shadowEllipse(cx, cy, rx, ry, lvl, canopy) {                // soft-edged: full core, dithered rim
+  for (let y = Math.floor(cy - ry - 2); y <= cy + ry + 2; y++) for (let x = Math.floor(cx - rx - 2); x <= cx + rx + 2; x++) {
+    const u = (x - cx) / rx, v = (y - cy) / ry, d = Math.sqrt(u * u + v * v);
+    if (d < 1.15) markSh(x, y, d < 0.85 ? lvl : ri(lvl * (1.15 - d) / 0.3), canopy);
+  }
+}
+function castColumn(x, base, w, h, lvl) {                            // vertical object -> shadow streak to the east
+  for (let k = 0; k <= h; k++) for (let j = 0; j < w; j++) markSh(x + j + k * SUN_VX, base + k * SUN_VY, ri(lvl * (1 - k / (h * 1.6))), false);
+}
+
+function bake() {
+  target(GROUND, WW, WH);
+  // -- grass: warm sunlit patches, cool hollows, short blade strokes
+  for (let y = 0; y < WH; y++) for (let x = 0; x < WW; x++) {
+    const n = Math.sin(x * 0.031 + 1.3) * Math.sin(y * 0.027 + 0.4) + 0.5 * Math.sin(x * 0.07 + y * 0.05 + 2);
+    let c = G1;
+    if (n > 0.35) c = (n - 0.35) * 80 > bay(x, y) ? G0 : G1;          // DITHER soft: half-width transitions
+    else if (n < -0.45) c = (-0.45 - n) * 80 > bay(x, y) ? G2 : G1;
+    px(x, y, c);
+  }
+  for (let k = 0; k < 1800; k++) {                                   // DITHER soft: ~1/3 of the speckle
+    const x = (rnd() * WW) | 0, y = (rnd() * WH) | 0, c = getAt(x, y);
+    if (c === G1 || c === G0) { px(x, y, G2); if (rnd() < 0.6) px(x, y - 1, c === G0 ? G1 : G0); }
+  }
+  // -- gravel loop path
+  for (let y = 0; y < WH; y++) for (let x = 0; x < WW; x++) {
+    const d = pathDist(x, y); if (d > PW + 1) continue;
+    if (d > PW && bay(x, y) < 8) continue;
+    const r = hash(x * 3571 + y * 2111);
+    px(x, y, r < 0.07 ? P0 : r < 0.13 ? P2 : P1);
+  }
+  // -- pond: stony shore, bank face on the far side, shallow -> deep water
+  for (let y = 0; y < WH; y++) for (let x = 0; x < WW; x++) {
+    const d = pondDepth(x, y); if (d < -0.04) continue;
+    if (d < 0) { px(x, y, hash(x * 31 + y * 17) < 0.5 ? ST1 : B1); continue; }
+    let c = d < 0.1 ? WA1 : d < 0.4 ? ((d - 0.1) * 106 > bay(x, y) ? WA2 : WA1) : ((d - 0.4) * 60 > bay(x, y) ? WA3 : WA2);
+    if (y < PC_Y && d < 0.05) c = B1;                                  // north bank face (3/4 view shows it)
+    else if (y < PC_Y && d < 0.09) c = WA3;                            // bank shadow on the water
+    px(x, y, c);
+  }
+  for (let k = 0; k < 9; k++) {                                        // lily pads
+    const a = rnd() * TAU, rr = 0.35 + rnd() * 0.45, x = ri(PC_X + Math.cos(a) * PRX * rr), y = ri(PC_Y + Math.sin(a) * PRY * rr);
+    ellipse(x, y, 2.6, 1.8, G2); px(x - 1, y - 1, G1); px(x + 1, y, WA2); if (k % 3 === 0) px(x, y - 1, L0);
+  }
+  for (let k = 0; k < 16; k++) {                                       // reed clumps along the shore
+    const a = rnd() * TAU, R = pondR(a) * 0.97, bx = ri(PC_X + Math.cos(a) * PRX * R), by = ri(PC_Y + Math.sin(a) * PRY * R);
+    if (Math.abs(bx - 320) < 20 && by > PC_Y) continue;                // keep the pier end clear
+    for (let s = 0; s < 5; s++) {
+      const x = bx + ((rnd() * 7) | 0) - 3, h = 3 + ((rnd() * 5) | 0);
+      vline(x, by - h, by, s & 1 ? G3 : G2); if (s === 2) { px(x, by - h - 1, B1); px(x, by - h - 2, B1); }
+    }
+  }
+  for (let k = 0; k < 12; k++) {                                       // shore rocks
+    const a = rnd() * TAU, R = pondR(a) * 1.02, x = ri(PC_X + Math.cos(a) * PRX * R), y = ri(PC_Y + Math.sin(a) * PRY * R);
+    if (Math.abs(x - 320) < 16 && y > PC_Y) continue;
+    ellipse(x, y, 2.5, 1.6, ST1); hline(x - 1, x + 1, y - 1, ST0); px(x - 2, y, ST0);
+    castColumn(x, y + 1, 2, 3, 12);
+  }
+  // -- pier (planks run east-west), posts, and its shadow on the water
+  for (let y = PIER_Y0; y <= PIER_Y1; y++) for (let x = PIER_X0; x <= PIER_X1; x++) {
+    let c = (y % 3 === 0) ? WD1 : WD0;
+    if (x === PIER_X0) c = P0; else if (x === PIER_X1) c = WD1;
+    if (((x * 5 + y) % 23) === 0) c = WD1;
+    px(x, y, c);
+  }
+  for (let k = 0; k < 4; k++) { const x = k & 1 ? PIER_X1 - 1 : PIER_X0, y = k & 2 ? PIER_Y0 + 14 : PIER_Y0; rect(x, y + 1, 2, 2, B1); }
+  rect(PIER_X0, PIER_Y0 - 1, PIER_X1 - PIER_X0 + 1, 1, P0);
+  for (let y = PIER_Y0; y <= PIER_Y0 + 20; y++) for (let x = PIER_X1 + 1; x <= PIER_X1 + 4; x++) markSh(x, y, 14, false);
+  // -- fallen leaves: scattered everywhere, thick under the trees, a few floating
+  for (let k = 0; k < 1450; k++) {
+    let x, y;
+    if (k < 1150) { const t = k % TREE_N, a = rnd() * TAU, r = Math.sqrt(rnd()) * TRAD[t] * 1.3; x = ri(TX[t] + Math.cos(a) * r); y = ri(TY[t] - 8 + Math.sin(a) * r * 0.7); }
+    else { x = (rnd() * WW) | 0; y = (rnd() * WH) | 0; }
+    const d = pondDepth(x, y);
+    if (d > 0 && rnd() < 0.85) continue;
+    if (pathDist(x, y) < PW && rnd() < 0.6) continue;
+    const r = rnd(), c = r < 0.3 ? L0 : r < 0.6 ? L1 : r < 0.85 ? L2 : L3;
+    px(x, y, c); if (rnd() < 0.3) px(x + 1, y, c);
+  }
+  // -- static cast shadows: canopies, trunks, bushes, benches, lamps (sun low in the west)
+  for (let t = 0; t < TREE_N; t++) {
+    const ch = TRAD[t] * 0.85 + 10;                                   // canopy centre height above the base
+    shadowEllipse(TX[t] + ch * SUN_VX + 4, TY[t] - 4 + ch * SUN_VY, TRAD[t] * 0.95, TRAD[t] * 0.62, 15, true);
+    castColumn(TX[t] - 3, TY[t], 6, 14, 15);
+  }
+  for (let b = 0; b < BUSH.length; b += 3) shadowEllipse(BUSH[b] + 6, BUSH[b + 1] + 1, BUSH[b + 2], BUSH[b + 2] * 0.55, 13, false);
+  for (let b = 0; b < BENCH.length; b += 2) shadowEllipse(BENCH[b] + 7, BENCH[b + 1] + 1, 13, 3, 11, false);
+  for (let l = 0; l < LAMP.length; l += 2) castColumn(LAMP[l], LAMP[l + 1], 2, 22, 13);
+  for (let y = 0; y < WH; y++) for (let x = 0; x < WW; x++) {
+    const i = y * WW + x; if (SMASK[i] > bay(x, y)) GROUND[i] = SHADE[GROUND[i]];
+  }
+  bakeCanopies();
+  bakeOccluders();
+  buildVignette(1);
+  target(FB, W, H);
+}
+
+// ---------- canopies: pre-shaded clump sprites (light from the west), drawn above subjects ----------
+const CAN_SPR = [], CAN_W = new Uint16Array(TREE_N), CAN_HGT = new Uint16Array(TREE_N);
+const SCHEME = [L0, L0, L1, L2,   L0, L1, L2, L3,   L1, L2, L3, L4];     // lit, mid, shade, deep per scheme
+function bakeCanopies() {
+  for (let t = 0; t < TREE_N; t++) {
+    const r = TRAD[t], w = 2 * r + 6, h = Math.ceil(2 * r * 0.85) + 6, s = TCOL[t] * 4;
+    const spr = new Uint8Array(w * h).fill(CLEAR);
+    target(spr, w, h);
+    const n = 17;
+    const cx = new Float32Array(n), cy = new Float32Array(n), cr = new Float32Array(n);
+    for (let k = 0; k < n; k++) {
+      const a = k === 0 ? 0 : (k / (n - 1)) * TAU * 2 + rnd() * 0.6, d = k === 0 ? 0 : r * (k < 9 ? 0.62 + rnd() * 0.08 : 0.3 + rnd() * 0.12);
+      cx[k] = w / 2 + Math.cos(a) * d; cy[k] = h / 2 + Math.sin(a) * d * 0.85; cr[k] = r * (0.3 + rnd() * 0.14);
+    }
+    const ord = Array.from({ length: n }, (_, k) => k).sort((a, b) => cy[a] - cy[b]);   // far clumps first
+    for (let o = 0; o < n; o++) {
+      const k = ord[o];
+      for (let y = Math.floor(cy[k] - cr[k]); y <= cy[k] + cr[k]; y++) for (let x = Math.floor(cx[k] - cr[k]); x <= cx[k] + cr[k]; x++) {
+        const u = (x - cx[k]) / cr[k], v = (y - cy[k]) / (cr[k] * 0.9);
+        if (u * u + v * v > 0.86 + 0.3 * hash(x * 17 + y * 31 + t * 7)) continue;          // ragged leafy edge
+        let lit = -u * 0.85 - v * 0.45 - (x - w / 2) / r * 0.35;
+        lit += (hash(x * 13 + y * 7 + t * 101) - 0.5) * 0.45;                           // leafy texture
+        px(x, y, SCHEME[s + (lit > 0.45 ? 0 : lit > -0.05 ? 1 : lit > -0.55 ? 2 : 3)]);
+      }
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {                           // rim + shadow-side outline
+      const v = spr[y * w + x]; if (v === CLEAR) continue;
+      const lft = x > 0 ? spr[y * w + x - 1] : CLEAR, rgt = x < w - 1 ? spr[y * w + x + 1] : CLEAR, dn = y < h - 1 ? spr[(y + 1) * w + x] : CLEAR;
+      if (lft === CLEAR && x < w * 0.55) spr[y * w + x] = RIM;
+      else if (rgt === CLEAR || dn === CLEAR) spr[y * w + x] = SCHEME[s + 3];
+    }
+    CAN_SPR.push(spr); CAN_W[t] = w; CAN_HGT[t] = h;
+  }
+}
+// Canopy over the frame; within a soft oval around any subject beneath it, drop to a 50% dither (reveal).
+function drawCanopies(cam, camy) {
+  for (let t = 0; t < TREE_N; t++) {
+    const spr = CAN_SPR[t], w = CAN_W[t], h = CAN_HGT[t];
+    const ox = TX[t] - (w >> 1) - cam, oy = TY[t] - 10 - h + 3 - camy;
+    if (ox > W || oy > H || ox + w < 0 || oy + h < 0) continue;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const v = spr[y * w + x]; if (v === CLEAR) continue;
+      const X = ox + x, Y = oy + y;
+      let reveal = false;
+      for (let s = 0; s < 2; s++) {
+        const dx = (X - SUBX[s]) / 12, dy = (Y - SUBY[s]) / 15;
+        if (SUBV[s] && dx * dx + dy * dy < 1 && SUBBASE[s] < TY[t] + 6) reveal = true;
+      }
+      if (reveal && bay(X, Y) < 9) continue;
+      px(X, Y, v);
+    }
+  }
+}
+
+// ---------- sorted ground objects: trunks, benches, lamps, bushes ----------
+function drawTrunk(t, sx, sy) {
+  for (let y = -18; y <= 0; y++) for (let x = -3; x <= 2; x++) {
+    let c = x === -3 ? B0 : B1;
+    if (x === 0 && ((y * 7) & 3) === 0) c = K1;
+    px(sx + x, sy + y, c);
+  }
+  px(sx - 4, sy, B1); px(sx + 3, sy, B1); px(sx - 5, sy, B0);
+}
+function drawBench(sx, sy) {
+  rect(sx - 11, sy - 10, 23, 3, WD1); hline(sx - 11, sx + 11, sy - 10, WD0);
+  for (let x = -11; x <= 11; x += 4) vline(sx + x, sy - 7, sy - 6, IRON);
+  rect(sx - 11, sy - 6, 23, 3, WD0); hline(sx - 11, sx + 11, sy - 4, WD1);
+  vline(sx - 10, sy - 3, sy, IRON); vline(sx + 10, sy - 3, sy, IRON); px(sx - 11, sy - 6, P0);
+}
+function drawLamp(sx, sy) {
+  rect(sx - 1, sy - 1, 4, 2, IRON);
+  vline(sx, sy - 20, sy, ST1); vline(sx + 1, sy - 20, sy, IRON);
+  rect(sx - 2, sy - 26, 6, 6, IRON); rect(sx - 1, sy - 25, 4, 4, ST0); px(sx, sy - 24, L0); px(sx + 1, sy - 23, L0);
+  hline(sx - 2, sx + 3, sy - 27, K1); px(sx - 2, sy - 26, RIM);
+}
+function drawBush(sx, sy, r) {
+  for (let y = -Math.ceil(r * 1.3); y <= 0; y++) for (let x = -r; x <= r; x++) {
+    const u = x / r, v = (y + r * 0.65) / (r * 0.7);
+    if (u * u + v * v > 1) continue;
+    const lit = -u * 0.8 - v * 0.5 + (hash(x * 11 + y * 5 + r * 97) - 0.5) * 0.5;
+    let c = lit > 0.4 ? G0 : lit > -0.1 ? G1 : lit > -0.5 ? G2 : G3;
+    if (hash(x * 3 + y * 17 + sx) < 0.08) c = lit > 0 ? L1 : L2;
+    px(sx + x, sy + y, c);
+  }
+}
+// leaf piles: pile 0 sits on the path where the dog dashes through it (scatters, then refills)
+const PILE = new Float32Array([0, 0, 9, 382, 294, 9, 92, 114, 8]);
+function drawPile(sx, sy, r, s) {
+  const rx = r * s, ry = r * 0.55 * s;
+  for (let y = Math.floor(-ry * 1.6); y <= 0; y++) for (let x = Math.floor(-rx); x <= rx; x++) {
+    const u = x / rx, v = (y + ry * 0.8) / ry;
+    if (u * u + v * v > 1) continue;
+    const lit = -u * 0.7 - v * 0.6 + (hash(x * 29 + y * 13) - 0.5) * 0.9;
+    px(sx + x, sy + y, lit > 0.5 ? L0 : lit > 0 ? L1 : lit > -0.5 ? L2 : L3);
+  }
+}
+
+// ---------- edge occluders: near-black out-of-focus leaves (parallax 1.5) ----------
+const OCC_F = 1.5, OCC_W = 64, OCC_H = 44, OCC = new Uint8Array(OCC_W * OCC_H);
+const OCC_POS = [-18, -14, 0, 770, -12, 1, -14, 420, 1, 772, 418, 0, 380, -22, 0, -24, 214, 1, 776, 222, 0, 400, 434, 1];
+function bakeOccluders() {
+  const put = (x, y) => { if (x >= 0 && y >= 0 && x < OCC_W && y < OCC_H) OCC[y * OCC_W + x] = 1; };
+  const leaf = (cx, cy, s) => {                                     // chunky maple-ish leaf
+    for (let y = -s; y <= s; y++) for (let x = -s; x <= s; x++) {
+      const a = Math.atan2(y, x), rr = s * (0.75 + 0.25 * Math.cos(5 * a));
+      if (x * x + y * y <= rr * rr) put(cx + x, cy + y);
+    }
+  };
+  for (let x = 0; x < 50; x++) { const y = ri(4 + x * 0.35 + Math.sin(x * 0.2) * 2); put(x, y); put(x, y + 1); }
+  const L = [8, 10, 5, 18, 16, 6, 28, 12, 5, 36, 22, 6, 46, 19, 5, 14, 26, 5, 26, 30, 6, 40, 34, 4, 55, 28, 5];
+  for (let i = 0; i < L.length; i += 3) leaf(L[i], L[i + 1], L[i + 2]);
+  const cnt = new Uint8Array(OCC_W * OCC_H);
+  for (let y = 0; y < OCC_H; y++) for (let x = 0; x < OCC_W; x++) {
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx, yy = y + dy;
+      if ((dx || dy) && xx >= 0 && yy >= 0 && xx < OCC_W && yy < OCC_H && OCC[yy * OCC_W + xx] === 1) n++;
+    }
+    cnt[y * OCC_W + x] = n;
+  }
+  for (let i = 0; i < OCC_W * OCC_H; i++) if (!OCC[i]) OCC[i] = cnt[i] >= 5 ? 1 : cnt[i] >= 3 ? 2 : 0;
+}
+function drawOccluders(cam, camy) {
+  const fx = ri(cam * OCC_F), fy = ri(camy * OCC_F);
+  for (let k = 0; k < OCC_POS.length; k += 3) {
+    const ox = OCC_POS[k] - fx, oy = OCC_POS[k + 1] - fy, flip = OCC_POS[k + 2] === 1;
+    if (ox > W || oy > H || ox + OCC_W < 0 || oy + OCC_H < 0) continue;
+    for (let y = 0; y < OCC_H; y++) {
+      const sw = y > 14 ? breezePx(y + k) : 0;
+      for (let x = 0; x < OCC_W; x++) {
+        const v = OCC[y * OCC_W + (flip ? OCC_W - 1 - x : x)]; if (!v) continue;
+        const X = ox + x + sw, Y = oy + y;
+        if (v === 1 || ((X + Y) & 1)) px(X, Y, K1);
+      }
+    }
+  }
+}
+function breezePx(k) { return Math.sin(TAU * gT * 16 / LOOP - k * 0.05) > 0.4 ? 1 : 0; }
+
+// ---------- route: pier -> full lap of the pond (constant speed via arc-length table) -> pier -> hold ----------
+const ARC_N = 2048, ARC = new Float32Array(ARC_N + 1);
+for (let k = 1; k <= ARC_N; k++) {
+  const a0 = Math.PI / 2 - (k - 1) / ARC_N * TAU, a1 = Math.PI / 2 - k / ARC_N * TAU;
+  const dx = RX * (Math.cos(a1) - Math.cos(a0)), dy = RY * (Math.sin(a1) - Math.sin(a0));
+  ARC[k] = ARC[k - 1] + Math.sqrt(dx * dx + dy * dy);
+}
+const L_ELL = ARC[ARC_N], PIER_END = 232, JUNC = CY + RY, LEG_A = JUNC - PIER_END;
+const T_A = 3, T_B = 55, T_C = 58;                                   // pier walk, lap, pier walk, then hold to 64 s
+let RPX = 0, RPY = 0, RDX = 0, RDY = 1, RDIST = 0, RMOV = false;
+function thetaAt(s) {                                                // arc length -> angle (binary search)
+  let lo = 0, hi = ARC_N;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (ARC[m] < s) lo = m; else hi = m; }
+  const f = (s - ARC[lo]) / Math.max(1e-6, ARC[hi] - ARC[lo]);
+  return Math.PI / 2 - (lo + f) / ARC_N * TAU;
+}
+function walkS(u, rIn, rOut) {
+  u = clamp(u, 0, 1);
+  const v = 1 / (1 - rIn / 2 - rOut / 2);
+  if (rIn > 0 && u < rIn) return v * u * u / (2 * rIn);
+  if (rOut > 0 && u > 1 - rOut) return 1 - v * (1 - u) * (1 - u) / (2 * rOut);
+  return v * (u - rIn / 2);
+}
+function route(t) {
+  t = ((t % LOOP) + LOOP) % LOOP;
+  if (t < T_A) {
+    const s = walkS(t / T_A, 0.3, 0.3);
+    RPX = CX; RPY = PIER_END + LEG_A * s; RDX = 0; RDY = 1; RDIST = LEG_A * s; RMOV = true;
+  } else if (t < T_B) {
+    const s = L_ELL * walkS((t - T_A) / (T_B - T_A), 0.025, 0.025), th = thetaAt(s);
+    RPX = CX + RX * Math.cos(th); RPY = CY + RY * Math.sin(th);
+    RDX = RX * Math.sin(th); RDY = -RY * Math.cos(th);               // d/ds of the position (theta decreasing)
+    const m = Math.sqrt(RDX * RDX + RDY * RDY); RDX /= m; RDY /= m;
+    RDIST = LEG_A + s; RMOV = true;
+  } else if (t < T_C) {
+    const s = walkS((t - T_B) / (T_C - T_B), 0.3, 0.35);
+    RPX = CX; RPY = JUNC - LEG_A * s; RDX = 0; RDY = -1; RDIST = LEG_A + L_ELL + LEG_A * s; RMOV = true;
+  } else { RPX = CX; RPY = PIER_END; RDX = 0; RDY = -1; RDIST = 2 * LEG_A + L_ELL; RMOV = false; }
+}
+function facingOf(dx, dy) { return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 0 : 2); }  // 0 S, 1 E, 2 N, 3 W
+// pile 0 sits on the route where the man passes at 24 s
+route(24); PILE[0] = ri(RPX); PILE[1] = ri(RPY) + 2;
+
+// ---------- the old man (S1) ----------
+const MW = 32, MH = 36, MAX = 16, MAY = 34, MAN = new Uint8Array(MW * MH);
+const LEG8 = new Int8Array([2, 1, 0, -1, -2, -1, 0, 1]);
+function drawMan(face, f, moving) {
+  MAN.fill(CLEAR); target(MAN, MW, MH, MAX, MAY);
+  const b = moving && (f === 2 || f === 6) ? -1 : 0;
+  if (face === 1 || face === 3) {                                    // side (drawn facing east; west is mirrored)
+    const lo = moving ? LEG8[f] : 0;
+    line(0, -7 + b, -lo, -1, TR1); rect(-lo - 1, 0, 3, 1, B1);        // far leg
+    line(0, -7 + b, lo, -1, TR0); rect(lo - 1, 0, 3, 1, K1);          // near leg
+    for (let y = -14; y <= -7; y++) hline(-3, 2, y + b, y === -7 ? MU1 : MU0);
+    vline(3, -12 + b, -8 + b, MU0);
+    const ax = moving ? -lo : 1;
+    line(0, -13 + b, ax, -8 + b, MU1); px(ax, -7 + b, SK0);
+    line(ax + 1, -7 + b, ax + 3, 0, B0);                              // walking stick taps ahead
+    for (let y = -21; y <= -15; y++) hline(-2, 3, y + b, SK0);
+    px(4, -18 + b, SK0); px(2, -18 + b, K1); px(0, -18 + b, SK1); hline(-2, -1, -19 + b, ST0); vline(-2, -18 + b, -16 + b, ST0);
+    px(3, -16 + b, ST0); px(2, -16 + b, ST0); px(1, -15 + b, SK1);
+    hline(-2, 2, -23 + b, C0); hline(-3, 3, -22 + b, C0); hline(-3, 3, -21 + b, C0); hline(-2, 5, -20 + b, C1); px(3, -19 + b, SK1);
+  } else {                                                           // front (S) or back (N)
+    const back = face === 2, lL = moving && (f === 1 || f === 2) ? -1 : 0, lR = moving && (f === 5 || f === 6) ? -1 : 0;
+    rect(-3, -6 + b, 2, 6 + lL, TR0); rect(1, -6 + b, 2, 6 + lR, TR0); rect(-1, -6 + b, 2, 2, TR1);
+    hline(-3, -2, lL, back ? B1 : K1); hline(1, 2, lR, back ? B1 : K1);
+    for (let y = -14; y <= -7; y++) hline(-4, 4, y + b, y === -7 ? MU1 : MU0);
+    if (!back) { px(0, -13 + b, SK1); px(-1, -14 + b, SK1); px(1, -14 + b, SK1); }
+    const sw = moving ? (f < 4 ? 1 : -1) : 0;
+    vline(-5, -13 + b, -8 + b + sw, MU0); vline(5, -13 + b, -8 + b - sw, MU0);
+    px(-5, -7 + b + sw, SK0); px(5, -7 + b - sw, SK0);
+    const sx = back ? -6 : 6;                                        // stick in his right hand
+    line(sx, -7 + b, sx + (back ? -1 : 1) * (moving && (f & 4) ? 2 : 1), 0, B0);
+    for (let y = -21; y <= -15; y++) hline(-3, 3, y + b, back ? ST0 : SK0);
+    if (back) { hline(-2, 2, -15 + b, SK1); px(-4, -18 + b, SK1); px(4, -18 + b, SK1); }
+    else { px(-1, -18 + b, K1); px(1, -18 + b, K1); hline(-1, 1, -16 + b, ST0); px(-4, -18 + b, SK1); px(4, -18 + b, SK1); hline(-3, 3, -19 + b, SK1); }
+    hline(-3, 3, -23 + b, C0); hline(-4, 4, -22 + b, C0); hline(-4, 4, -21 + b, C0); hline(-4, 4, -20 + b, back ? C0 : C1);
+  }
+}
+
+// ---------- the corgi (S2) ----------
+const DW_ = 32, DH_ = 24, DAX = 16, DAY = 22, DOG = new Uint8Array(DW_ * DH_);
+const GAIT4 = new Int8Array([1, 1, 0, 0, -1, -1, 0, 0]);             // 4-beat walk: each leg offset by 2 frames
+const DOG_LEGS = new Int8Array([-5, 0, -3, 4, 2, 2, 4, 6]);          // x, phase: rear L, rear R, front L, front R
+function drawDog(face, f, moving, sit) {
+  DOG.fill(CLEAR); target(DOG, DW_, DH_, DAX, DAY);
+  const b = moving && (f === 1 || f === 5) ? -1 : 0;
+  if (face === 1 || face === 3) {
+    if (sit) {
+      rect(-5, -5, 6, 5, D0); hline(-5, 0, -1, D1); px(-6, -3, DW); px(-6, -2, D0);
+      rect(1, -9, 4, 9, D0); rect(3, -7, 2, 6, DW); vline(2, -3, 0, D1); vline(4, -3, 0, D1); px(2, 0, DW); px(4, 0, DW);
+      rect(3, -13, 5, 5, D0); rect(6, -11, 3, 2, DW); px(9, -11, K1); px(6, -12, K1);
+      rect(3, -16, 2, 3, D0); rect(6, -16, 2, 3, D0); px(3, -15, D1); px(6, -15, D1);
+      return;
+    }
+    const legs = DOG_LEGS;
+    for (let k = 0; k < 8; k += 2) {
+      const o = moving ? GAIT4[(f + legs[k + 1]) & 7] : 0, lift = moving && ((f + legs[k + 1]) & 7) >= 6 ? -1 : 0;
+      vline(legs[k] + o, -2 + b, -1 + lift, k === 2 || k === 6 ? D1 : D0); px(legs[k] + o, lift, DW);
+    }
+    rect(-6, -7 + b, 12, 5, D0); hline(-5, 4, -3 + b, D1);
+    rect(4, -6 + b, 3, 4, DW);
+    px(-7, -6 + b, D0); px(-7, -5 + b, DW); px(-8, -5 + b, DW);
+    rect(5, -10 + b, 4, 4, D0); rect(8, -7 + b, 3, 2, DW); px(10, -7 + b, K1); px(7, -9 + b, K1);
+    rect(5, -13 + b, 2, 3, D0); rect(7, -13 + b, 2, 3, D0); px(5, -12 + b, D1); px(8, -12 + b, D1);
+  } else if (face === 0) {                                           // toward camera
+    const lo = moving ? (f < 4 ? -1 : 0) : 0, ro = moving ? (f < 4 ? 0 : -1) : 0;
+    rect(-4, -7 + b, 9, 5, D0);
+    vline(-2, -2, lo, D0); vline(2, -2, ro, D0); px(-2, lo, DW); px(2, ro, DW);
+    rect(-2, -5 + b, 5, 3, DW);
+    rect(-3, -12 + b, 7, 6, D0); rect(-1, -8 + b, 3, 2, DW); px(0, -8 + b, K1); px(-2, -10 + b, K1); px(2, -10 + b, K1);
+    rect(-4, -15 + b, 2, 3, D0); rect(3, -15 + b, 2, 3, D0); px(-3, -14 + b, D1); px(3, -14 + b, D1);
+  } else {                                                           // away from camera
+    const lo = moving ? (f < 4 ? -1 : 0) : 0, ro = moving ? (f < 4 ? 0 : -1) : 0;
+    rect(-4, -8 + b, 9, 6 + (sit ? 2 : 0), D0);
+    if (!sit) { vline(-3, -2, lo, D1); vline(3, -2, ro, D1); }
+    rect(-1, -6 + b, 3, 3, DW);
+    rect(-3, -12 + b, 7, 4, D0);
+    rect(-4, -14 + b, 2, 3, D0); rect(3, -14 + b, 2, 3, D0);
+  }
+}
+
+// ---------- per-frame subject state ----------
+const SUBX = new Float32Array(2), SUBY = new Float32Array(2), SUBBASE = new Float32Array(2), SUBV = new Uint8Array(2);
+const MAN_S = { x: 0, y: 0, face: 2, f: 0, mov: false, dist: 0 };
+const DOG_S = { x: 0, y: 0, face: 2, f: 0, mov: false, sit: false, u: 0, prevU: 0 };
+function dogU(t) {
+  if (t >= 16 && t < 18.5) return lerp(15, 24.8, easeSine((t - 16) / 2.5));
+  if (t >= 18.5 && t < 25.8) return 24.8;
+  return t - 1.0;
+}
+function updateSubjects() {
+  const tq = Math.floor(gT * 12) / 12;
+  route(gT); MAN_S.x = RPX; MAN_S.y = RPY; MAN_S.mov = RMOV;
+  MAN_S.face = RMOV ? facingOf(RDX, RDY) : 2;
+  route(tq); MAN_S.f = Math.floor(RDIST / 2.4) & 7;
+  // dog: follows 1 s behind on the same route, weaving; dashes ahead through the leaf pile, waits, sits at the pier
+  const u = dogU(gT), uq = dogU(tq);
+  DOG_S.prevU = DOG_S.u; DOG_S.u = u;
+  route(u);
+  const weave = 2.5 * cyc(32, 0), hold = clamp((((u % LOOP) + LOOP) % LOOP - 57.2) / 0.8, 0, 1);
+  DOG_S.x = RPX - RDY * weave * (1 - hold) + 10 * hold; DOG_S.y = RPY + RDX * weave * (1 - hold) + 3 * hold;
+  const waiting = gT >= 18.5 && gT < 25.8;
+  DOG_S.mov = RMOV && !waiting;
+  DOG_S.sit = waiting || !RMOV;
+  DOG_S.face = waiting ? facingOf(-RDX, -RDY) : (RMOV ? facingOf(RDX, RDY) : 2);
+  route(uq); DOG_S.f = Math.floor(RDIST / 1.7) & 7;
+}
+
+// ---------- camera: pixel-stable follow (CAMERA_SMOOTHING = smooth) ----------
+// camera = round(man) + round(smoothed offset): the man holds his screen position (no 1 px wobble);
+// the look-ahead is low-pass filtered (no flip at corners); the pier framing blends in and out over 1.5 s.
+const CAM_ST = new Float64Array(4);                                  // offset x, vel x, offset y, vel y
+let LEADX = 0, LEADY = 0, camXi = 0, camYi = 0;
+function holdBlend(t) {                                              // continuous across the loop point
+  if (t >= T_C - 2.5 && t < T_C - 1.0) return easeSine((t - (T_C - 2.5)) / 1.5);
+  if (t >= T_C - 1.0) return 1;
+  if (t < 1.5) return 1 - easeSine(t / 1.5);
+  return 0;
+}
+function stepCamera() {
+  route(gT);
+  LEADX = lowpass(LEADX, RMOV ? RDX : 0, 1.2); LEADY = lowpass(LEADY, RMOV ? RDY : 0, 1.2);
+  const h = holdBlend(gT);
+  spring(CAM_ST, 0, LEADX * 26 * (1 - h) - W / 2, 1.2, 0);
+  spring(CAM_ST, 2, (LEADY * 20 - 10) * (1 - h) - 40 * h - H / 2, 1.2, 0);
+  camXi = pixelFollow(0, MAN_S.x, CAM_ST[0], 0, WW - W);
+  camYi = pixelFollow(1, MAN_S.y, CAM_ST[2], 0, WH - H);
+}
+
+// ---------- particles: falling leaves (screen slice), leaf burst (world + height), water ripples ----------
+const PN = 220, AMB_N = 30, P_BURST = 1, P_RIPPLE = 2;
+const pX = new Float32Array(PN), pY = new Float32Array(PN), pZ = new Float32Array(PN), pVX = new Float32Array(PN), pVY = new Float32Array(PN);
+const pVZ = new Float32Array(PN), pAge = new Float32Array(PN), pLife = new Float32Array(PN), pC = new Uint8Array(PN), pType = new Uint8Array(PN);
+let pNext = AMB_N;
+for (let i = 0; i < AMB_N; i++) { pX[i] = rnd() * W; pY[i] = rnd() * H; pVY[i] = 6 + rnd() * 7; pZ[i] = rnd() * TAU; pC[i] = L0 + ((rnd() * 4) | 0); }
+function spawn(type, x, y, z, vx, vy, vz, life, c) {
+  for (let n = 0; n < PN - AMB_N; n++) {
+    const i = AMB_N + ((pNext - AMB_N + n) % (PN - AMB_N));
+    if (pType[i] !== 0) continue;
+    pType[i] = type; pX[i] = x; pY[i] = y; pZ[i] = z; pVX[i] = vx; pVY[i] = vy; pVZ[i] = vz; pAge[i] = 0; pLife[i] = life; pC[i] = c;
+    pNext = i + 1 >= PN ? AMB_N : i + 1; return;
+  }
+}
+// ---------- ducks: Lissajous paths with whole-number frequencies (loop-safe) ----------
+const DUCK_A = new Float32Array([1, 2, 1]), DUCK_B = new Float32Array([2, 3, 3]), DUCK_P = new Float32Array([0.3, 2.2, 4.1]);
+function duckPos(k, t, out) {
+  const tau = TAU * t / LOOP;
+  out[0] = PC_X + 64 * Math.sin(tau * DUCK_A[k] + DUCK_P[k]);
+  out[1] = PC_Y + 24 * Math.sin(tau * DUCK_B[k] + DUCK_P[k] * 1.7);
+}
+const DP0 = new Float32Array(2), DP1 = new Float32Array(2);
+const GLINT_N = 70, GLX = new Int16Array(GLINT_N), GLY = new Int16Array(GLINT_N);
+for (let k = 0; k < GLINT_N; k++) {
+  let x, y; do { x = PC_X + (rnd() * 2 - 1) * PRX; y = PC_Y + (rnd() * 2 - 1) * PRY; } while (pondDepth(x, y) < 0.08);
+  GLX[k] = ri(x); GLY[k] = ri(y);
+}
+let pileScale = 1, lastCamX = 0, lastCamY = 0;
+
+function update() {
+  updateSubjects();
+  stepCamera();
+  const dcx = camXi - lastCamX, dcy = camYi - lastCamY; lastCamX = camXi; lastCamY = camYi;
+  // EFFECT_1: the dog bursts through the leaf pile
+  if (DOG_S.prevU < 24 && DOG_S.u >= 24) for (let k = 0; k < 26; k++) {
+    const a = rnd() * TAU, sp = 10 + rnd() * 22;
+    spawn(P_BURST, PILE[0] + (rnd() - 0.5) * 8, PILE[1] - 2, 1, Math.cos(a) * sp, Math.sin(a) * sp * 0.6, 30 + rnd() * 30, 4, L0 + ((rnd() * 4) | 0));
+  }
+  pileScale = gT < 18.3 ? 1 : gT < 60 ? lerp(0.35, 1, (gT - 18.3) / 41.7) : 1;   // STATE_CHANGES: scatters, refills
+  // duck wakes and the odd fish rise
+  if (frame % 24 === 0) for (let k = 0; k < 3; k++) { duckPos(k, gT, DP0); spawn(P_RIPPLE, DP0[0], DP0[1], 0, 0, 0, 0, 0.9, 0); }
+  if (frame % 80 === 17) { let x, y; do { x = PC_X + (rnd() * 2 - 1) * PRX; y = PC_Y + (rnd() * 2 - 1) * PRY; } while (pondDepth(x, y) < 0.15); spawn(P_RIPPLE, x, y, 0, 0, 0, 0, 1.2, 1); }
+  for (let i = 0; i < AMB_N; i++) {                                  // AMBIENT: falling leaves between camera and ground
+    pY[i] += pVY[i] * STEP - dcy * 1.2; pX[i] += Math.sin(gT * 1.7 + pZ[i]) * 9 * STEP - dcx * 1.2;
+    if (pY[i] > H + 4) { pY[i] -= H + 8; pX[i] = rnd() * W; } else if (pY[i] < -4) pY[i] += H + 8;
+    if (pX[i] < -4) pX[i] += W + 8; else if (pX[i] > W + 4) pX[i] -= W + 8;
+  }
+  for (let i = AMB_N; i < PN; i++) {
+    const ty = pType[i]; if (ty === 0) continue;
+    pAge[i] += STEP;
+    if (ty === P_BURST) {
+      pVZ[i] -= 70 * STEP; if (pVZ[i] < -9) pVZ[i] = -9;               // flutter: low terminal speed
+      pVX[i] *= 0.97; pVY[i] *= 0.97;
+      pX[i] += (pVX[i] + Math.sin(pAge[i] * 6 + i) * 6) * STEP; pY[i] += pVY[i] * STEP; pZ[i] += pVZ[i] * STEP;
+      if (pZ[i] <= 0) pType[i] = 0;
+    } else if (pAge[i] >= pLife[i]) pType[i] = 0;
+  }
+}
+
+// ---------- drawing helpers ----------
+const OBJ_N = TREE_N + 2 + 3 + 8 + 2;
+const OT = new Uint8Array(OBJ_N), OI = new Uint8Array(OBJ_N), OKEY = new Float32Array(OBJ_N), ORD = new Uint8Array(OBJ_N);
+{
+  let n = 0;
+  for (let t = 0; t < TREE_N; t++) { OT[n] = 0; OI[n] = t; OKEY[n++] = TY[t]; }
+  for (let b = 0; b < 2; b++) { OT[n] = 1; OI[n] = b; OKEY[n++] = BENCH[b * 2 + 1]; }
+  for (let l = 0; l < 3; l++) { OT[n] = 2; OI[n] = l; OKEY[n++] = LAMP[l * 2 + 1]; }
+  for (let b = 0; b < 8; b++) { OT[n] = 3; OI[n] = b; OKEY[n++] = BUSH[b * 3 + 1]; }
+  OT[n] = 4; OI[n++] = 0; OT[n] = 5; OI[n++] = 0;
+}
+const STAMP = new Uint16Array(W * H); let stampId = 1;
+function inShade(wx, wy) { const x = ri(wx), y = ri(wy); return x >= 0 && y >= 0 && x < WW && y < WH && CSH[y * WW + x] === 1; }
+function castSprite(buf, w, h, ax, ay, flip, sx, sy) {               // long shadow to the east from the sprite silhouette
+  stampId = (stampId % 65535) + 1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (buf[y * w + (flip ? w - 1 - x : x)] === CLEAR) continue;
+    const hgt = ay - y; if (hgt < 0) continue;
+    const X = sx - ax + x + ri(hgt * SUN_VX), Y = sy + ri(hgt * SUN_VY);
+    for (let k = 0; k < 2; k++) {
+      const xx = X + k; if (xx < 0 || xx >= W || Y < 0 || Y >= H) continue;
+      const i = Y * W + xx; if (STAMP[i] === stampId) continue; STAMP[i] = stampId;
+      if (14 - hgt * 0.2 > bay(xx, Y)) FB[i] = SHADE[FB[i]];
+    }
+  }
+}
+function drawSubject(isDog, cam, camy) {
+  const S = isDog ? DOG_S : MAN_S, buf = isDog ? DOG : MAN, w = isDog ? DW_ : MW, h = isDog ? DH_ : MH, ax = isDog ? DAX : MAX, ay = isDog ? DAY : MAY;
+  const sx = ri(S.x) - cam, sy = ri(S.y) - camy, flip = S.face === 3, shade = inShade(S.x, S.y);
+  const ox = flip ? sx - (w - 1 - ax) : sx - ax;
+  blitLit(buf, w, h, ox, sy - ay, flip, CLEAR, shade ? CLEAR : RIM, CLEAR, K1, 1, 2, SHADE, 1, LIGHT);
+}
+function drawDuck(k, cam, camy) {
+  duckPos(k, gT, DP0); duckPos(k, gT + 0.2, DP1);
+  const x = ri(DP0[0]) - cam, y = ri(DP0[1]) - camy, dx = DP1[0] - DP0[0], dy = DP1[1] - DP0[1];
+  const horiz = Math.abs(dx) > Math.abs(dy), s = horiz ? (dx > 0 ? 1 : -1) : (dy > 0 ? 1 : -1);
+  for (let j = 2; j < 7; j++) {                                      // V-shaped wake
+    const wx = horiz ? x - s * j : x, wy = horiz ? y : y - s * j, spread = j >> 1;
+    if (horiz) { remapAt(wx, wy - spread, LIGHT); remapAt(wx, wy + spread, LIGHT); } else { remapAt(wx - spread, wy, LIGHT); remapAt(wx + spread, wy, LIGHT); }
+  }
+  if (horiz) { hline(x - 2, x + 2, y, DW); hline(x - 1, x + 1, y + 1, ST0); px(x + 2 * s, y - 1, G3); px(x + 3 * s, y - 1, G3); px(x + 4 * s, y - 1, L1); px(x - 2 * s, y - 1, DW); }
+  else { vline(x, y - 2, y + 2, DW); vline(x + 1, y - 1, y + 1, ST0); px(x, y + 2 * s, G3); px(x, y + 3 * s, L1); }
+}
+const CL_W = 364, CL_H = 176, CLOUD = [new Uint8Array(CL_W * CL_H), new Uint8Array(CL_W * CL_H)];
+for (let k = 0; k < 2; k++) for (let y = 0; y < CL_H; y++) for (let x = 0; x < CL_W; x++) {
+  const u = (x - CL_W / 2) / 150, v = (y - CL_H / 2) / 72, a = Math.atan2(v, u);
+  const d = Math.sqrt(u * u + v * v) / (1 + 0.14 * Math.sin(5 * a + k * 2) + 0.07 * Math.sin(9 * a));
+  CLOUD[k][y * CL_W + x] = d < 0.75 ? 8 : d < 1 ? ri(8 * (1 - d) / 0.25) : 0;   // core = clean 50% checker
+}
+function drawCloudShadows(cam, camy) {                               // on the ground plane: they move with the ground
+  for (let k = 0; k < 2; k++) {
+    const m = CLOUD[k], ox = ri(-240 + ((gT * 1100 / LOOP + k * 550) % 1100)) - (CL_W >> 1) - cam, oy = (k ? 250 : 95) - (CL_H >> 1) - camy;
+    const x0 = Math.max(0, ox), x1 = Math.min(W - 1, ox + CL_W - 1), y0 = Math.max(0, oy), y1 = Math.min(H - 1, oy + CL_H - 1);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const l = m[(y - oy) * CL_W + (x - ox)];
+      if (l > bay(x + cam, y + camy)) FB[y * W + x] = SHADE[FB[y * W + x]];
+    }
+  }
+}
+const SHAFT_C = new Float32Array(3);
+function drawShafts(cam, camy) {                                     // SHAFTS subtle: diagonal sunbeams from the west
+  const off = (frame >> 3) & 3;
+  for (let b = 0; b < 3; b++) SHAFT_C[b] = -260 + b * 260 + 24 * cyc(2, b);
+  for (let y = 0; y < H; y++) {
+    const c0 = cam - 1.6 * (y + camy);
+    for (let b = 0; b < 3; b++) {                                    // each band covers a short x-span per row
+      const xa = Math.max(0, Math.ceil(SHAFT_C[b] - 16 - c0)), xb = Math.min(W - 1, Math.floor(SHAFT_C[b] + 16 - c0));
+      for (let x = xa; x <= xb; x++) {
+        const d = Math.abs(x + c0 - SHAFT_C[b]);
+        if ((1 - d / 16) * 5 > bay(x + off, y)) FB[y * W + x] = LIGHT[FB[y * W + x]];
+      }
+    }
+  }
+}
+
+// ---------- frame composition ----------
+function render() {
+  const cam = camXi, camy = camYi;
+  target(FB, W, H);
+  for (let y = 0; y < H; y++) { const o = (y + camy) * WW + cam, r = y * W; for (let x = 0; x < W; x++) FB[r + x] = GROUND[o + x]; }
+  for (let k = 0; k < GLINT_N; k++) {                                // sun glints on the water
+    const hsh = hash((frame >> 3) * 71 + k * 13);
+    if (hsh < 0.12) { const x = GLX[k] - cam, y = GLY[k] - camy; px(x, y, WA0); if (hsh < 0.025) { px(x - 1, y, WA0); px(x + 1, y, WA0); } }
+  }
+  for (let i = AMB_N; i < PN; i++) if (pType[i] === P_RIPPLE) {
+    const r = 0.8 + 4 * pAge[i] / pLife[i], x = pX[i] - cam, y = pY[i] - camy;
+    for (let s = 0; s < 14; s++) { const a = s * TAU / 14; remapAt(ri(x + Math.cos(a) * r), ri(y + Math.sin(a) * r * 0.55), LIGHT); }
+  }
+  for (let k = 0; k < 3; k++) drawDuck(k, cam, camy);
+  for (let p = 0; p < 3; p++) drawPile(ri(PILE[p * 3]) - cam, ri(PILE[p * 3 + 1]) - camy, PILE[p * 3 + 2], p === 0 ? pileScale : 1);
+  drawMan(MAN_S.face, MAN_S.f, MAN_S.mov); drawDog(DOG_S.face, DOG_S.f, DOG_S.mov, DOG_S.sit);
+  target(FB, W, H);
+  if (!inShade(MAN_S.x, MAN_S.y)) castSprite(MAN, MW, MH, MAX, MAY, MAN_S.face === 3, ri(MAN_S.x) - cam, ri(MAN_S.y) - camy);
+  if (!inShade(DOG_S.x, DOG_S.y)) castSprite(DOG, DW_, DH_, DAX, DAY, DOG_S.face === 3, ri(DOG_S.x) - cam, ri(DOG_S.y) - camy);
+  drawShafts(cam, camy);
+  // depth-sorted objects + subjects (three-quarter view: sort by base y)
+  OKEY[OBJ_N - 2] = MAN_S.y; OKEY[OBJ_N - 1] = DOG_S.y + 0.5;
+  for (let i = 0; i < OBJ_N; i++) ORD[i] = i;
+  for (let i = 1; i < OBJ_N; i++) { const v = ORD[i]; let j = i - 1; while (j >= 0 && OKEY[ORD[j]] > OKEY[v]) { ORD[j + 1] = ORD[j]; j--; } ORD[j + 1] = v; }
+  for (let n = 0; n < OBJ_N; n++) {
+    const o = ORD[n], t = OT[o], i = OI[o];
+    if (t === 0) drawTrunk(i, TX[i] - cam, TY[i] - camy);
+    else if (t === 1) drawBench(BENCH[i * 2] - cam, BENCH[i * 2 + 1] - camy);
+    else if (t === 2) drawLamp(LAMP[i * 2] - cam, LAMP[i * 2 + 1] - camy);
+    else if (t === 3) drawBush(BUSH[i * 3] - cam, BUSH[i * 3 + 1] - camy, BUSH[i * 3 + 2]);
+    else drawSubject(t === 5, cam, camy);
+  }
+  SUBX[0] = MAN_S.x - cam; SUBY[0] = MAN_S.y - 12 - camy; SUBBASE[0] = MAN_S.y; SUBV[0] = 1;
+  SUBX[1] = DOG_S.x - cam; SUBY[1] = DOG_S.y - 6 - camy; SUBBASE[1] = DOG_S.y; SUBV[1] = 1;
+  drawCanopies(cam, camy);
+  for (let i = AMB_N; i < PN; i++) if (pType[i] === P_BURST) {         // burst leaves with their own ground shadows
+    const x = ri(pX[i]) - cam, y = ri(pY[i]) - camy, z = ri(pZ[i]);
+    remapAt(x + ri(z * SUN_VX), y + ri(z * SUN_VY), SHADE);
+    px(x, y - z, pC[i]); if ((frame >> 3) & 1) px(x + 1, y - z, pC[i]); else px(x, y - z - 1, pC[i]);
+  }
+  drawCloudShadows(cam, camy);
+  for (let i = 0; i < AMB_N; i++) {
+    const x = ri(pX[i]), y = ri(pY[i]);
+    px(x, y, pC[i]); if (((frame >> 3) + i) & 1) px(x + 1, y, pC[i]); else px(x, y + 1, SHADE[pC[i]]);
+  }
+  drawOccluders(cam, camy);
+  applyVignette(SHADE);
+}
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

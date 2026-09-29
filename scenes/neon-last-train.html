@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Last Train</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+
+/* ==========================================================================
+   TEST 7 - LOOK = neon-noir, SIDE VIEW: "Last Train"
+   Built on the shared kit (core/kit_neon.js) extracted from "Neon Rain", to show the look carries to
+   another projection and use case.
+   Resolved options (non-defaults marked *):
+     LOOK neon-noir* -> TIME night · WEATHER rain · ATMOSPHERE medium · LIGHT_STYLE neon · GRADE neon ·
+       FLICKER neon-buzz · SHAFTS off · SATURATION low base / high practicals (all from the look)
+     OUTPUT_MODE loop · LOOP_SECONDS 48* · RESOLUTION 320x180 · FRAME letterbox-2.39 · WORLD_W 1.5
+     PROJECTION side · TRAVEL left-to-right · ENVIRONMENT exterior (under a canopy)
+     SETTING an elevated city railway platform in the rain: brick arcade wall, steel canopy, overhead wires,
+       the city's neon skyline beyond*
+     PRACTICALS ramen sign (magenta, flickers), vending machines (cyan), tube light (white, buzzing),
+       departure board + lamp post + waiting-room windows (amber), the train (warm windows, headlight)*
+     PRACTICAL_STRENGTH medium · SHADOWS contact-only · RIM auto (each side from the nearest light)
+     MOOD lonely, hushed, electric* · PALETTE 48
+     SUBJECT_COUNT 1 · S1 commuter: tan trench coat, dark bob, black umbrella; walk gait*
+     BEATS walk in under the umbrella -> close it under the canopy -> buy a can -> wait under the board (sip)
+           -> the last train's headlight sweeps in -> the train hides her -> it leaves; the platform is empty*
+     LOOP_CLOSE exit-reenter* · EFFECT_1 drips (umbrella, canopy edge)* · EFFECT_2 sparks (braking wheels)*
+     AMBIENT rain, splashes, pantograph arcs* · STATE_CHANGES board text, umbrella open/closed*
+     SHOTS follow -> hold on the platform -> the train fills the frame -> drift back* · FOREGROUND bottom
+   ========================================================================== */
+const TITLE = 'Last Train';
+const W = 320, H = 180, IMG_TOP = 23, IMG_BOT = 157;            // letterbox 2.39
+const LOOP_FRAMES = 2880;                                       // 48 s
+const SEED = 17, OUTPUT_MODE = 'loop', STILL_T = 21, DEBUG_KEYS = true, EXPORT_SCALES = [1, 4];
+const WW = 480;
+
+const PAL_HEX = [
+  '#06050b', '#110f1e',                                         // 0-1   near-blacks
+  '#171530', '#211c3e', '#31254e', '#48305e',                   // 2-5   sky: zenith -> city glow
+  '#7a5a90', '#56427a', '#372d57',                              // 6-8   haze: bright -> dim
+  '#5c3d4f', '#442d3f', '#2e2131',                              // 9-11  brick: lit, base, dark / mortar
+  '#4a4866', '#333150', '#22203a',                              // 12-14 steel + concrete
+  '#3d3b5c', '#28263f', '#1b1a2c',                              // 15-17 wet ground: sheen, base, puddle
+  '#ffd6f2', '#ff4fc0', '#b0368a', '#5e2459',                   // 18-21 magenta neon: core -> dark tint
+  '#dcffff', '#45e3f2', '#2389ac', '#1e4b66',                   // 22-25 cyan neon
+  '#f6f3ff', '#aeaad0',                                         // 26-27 white tube / headlight
+  '#ffd27e', '#d8893f', '#7d4a36',                              // 28-30 amber
+  '#c9a46a', '#8e6e4a', '#54402f',                              // 31-33 trench coat
+  '#e3ae8f', '#a86e5c', '#2b1f2b',                              // 34-36 skin, skin shade, hair
+  '#463f58', '#221e2e',                                         // 37-38 umbrella
+  '#626a88', '#3d4260', '#262a40', '#9aa4c4',                   // 39-42 train steel: lit, base, shade, highlight
+  '#fff0c8', '#d6b27a',                                         // 43-44 train windows, interior
+  '#d9b43a',                                                    // 45    platform edge line
+  '#b8c4ea', '#6a74a2'                                          // 46-47 rain
+];
+const K0 = 0, K1 = 1, SY0 = 2, SY1 = 3, SY2 = 4, SY3 = 5, FG0 = 6, FG1 = 7, FG2 = 8, BK0 = 9, BK1 = 10, BK2 = 11,
+      CN0 = 12, CN1 = 13, CN2 = 14, GR0 = 15, GR1 = 16, GR2 = 17, NM0 = 18, NM1 = 19, NM2 = 20, NM3 = 21,
+      NC0 = 22, NC1 = 23, NC2 = 24, NC3 = 25, WT0 = 26, WT1 = 27, AM0 = 28, AM1 = 29, AM2 = 30,
+      TC0 = 31, TC1 = 32, TC2 = 33, SN0 = 34, SN1 = 35, HR0 = 36, UB0 = 37, UB1 = 38,
+      TR0 = 39, TR1 = 40, TR2 = 41, TR3 = 42, TW0 = 43, TW1 = 44, YL0 = 45, RN0 = 46, RN1 = 47;
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+
+// ==========================================================================
+// KIT: NEON-NOIR (LOOK = neon-noir) - the lighting recipe from "Neon Rain", shared by scenes in that look.
+// Projection-neutral: it works on palette indices and screen-space buffers. The scene supplies its material
+// ramps (dark -> lit), a per-pixel depth buffer for light pools and a wet mask for reflections.
+// Include it after core_a (it uses makeLUT, bay, hash, FB, W, H, IMG_TOP, IMG_BOT, LOOP, gT, frame).
+// ==========================================================================
+
+// ---- colour tables built from ramps ----
+// A practical's colour: each material keeps its value but takes the light's hue (dark -> d, mid -> m, lit -> b).
+function kTint(ramps, d, m, b) {
+  const pairs = [];
+  for (let r = 0; r < ramps.length; r++) {
+    const R = ramps[r], n = R.length;
+    for (let k = 0; k < n; k++) { const f = n === 1 ? 0.5 : k / (n - 1); pairs.push(R[k], f < 0.34 ? d : f < 0.67 ? m : b); }
+  }
+  return makeLUT(pairs);
+}
+// One step along each ramp: dir +1 = LIGHT (brighter, top clamps to 'top'), -1 = SHADE (darker, bottom to 'bottom').
+function kStep(ramps, dir, top, bottom) {
+  const pairs = [];
+  for (let r = 0; r < ramps.length; r++) {
+    const R = ramps[r], n = R.length;
+    for (let k = 0; k < n; k++) { const j = k + dir; pairs.push(R[k], j < 0 ? bottom : j >= n ? (top === undefined ? R[n - 1] : top) : R[j]); }
+  }
+  return makeLUT(pairs);
+}
+// Wet reflection: lights stay coloured one step down; every other material sinks one step, its darkest to 'floor'.
+function kRefl(lightRamps, matRamps, floor) {
+  const pairs = [];
+  for (let r = 0; r < lightRamps.length; r++) { const R = lightRamps[r]; for (let k = 0; k < R.length; k++) pairs.push(R[k], R[Math.min(R.length - 1, k + 1)]); }
+  for (let r = 0; r < matRamps.length; r++) { const R = matRamps[r]; for (let k = 0; k < R.length; k++) pairs.push(R[k], k === 0 ? floor : R[k - 1]); }
+  return makeLUT(pairs);
+}
+// Toward the glowing haze: every ramp entry maps to the fog ramp entry nearest its brightness (dark -> fog[0]).
+function kFogStep(ramps, fog) {
+  const pairs = [];
+  for (let r = 0; r < ramps.length; r++) { const R = ramps[r], n = R.length; for (let k = 0; k < n; k++) pairs.push(R[k], fog[Math.min(fog.length - 1, Math.floor(k / n * fog.length + 0.5))]); }
+  return makeLUT(pairs);
+}
+// Depth fog in two flat steps with narrow dithered hand-offs; distant areas stay solid instead of turning to noise.
+function kFog2(c, z, x, y, zA, wA, zB, wB, lut) {
+  if (clamp((z - zA) / wA * 16, 0, 16) > bay(x, y)) c = lut[c];
+  if (clamp((z - zB) / wB * 16, 0, 16) > bay(x + 2, y + 1)) c = lut[c];
+  return c;
+}
+
+// ---- light pools (2.5D): screen distance plus depth difference ----
+// ZD holds the depth (world units) of whatever was drawn at each pixel; zk converts depth to px.
+// The whole pool takes the light's colour; a second step is allowed only in the core (PRACTICAL_STRENGTH medium).
+// Quantised with a narrow dither (B3 per-pixel light): wide ordered dither across a slow falloff turns to sparkle.
+function kPool(ZD, lx, ly, lz, R, str, lut, on, zk, sy) {
+  if (on <= 0) return;
+  const x0 = Math.max(0, Math.floor(lx - R)), x1 = Math.min(W - 1, Math.ceil(lx + R));
+  const y0 = Math.max(IMG_TOP, Math.floor(ly - R / sy)), y1 = Math.min(IMG_BOT - 1, Math.ceil(ly + R / sy)), R2 = R * R;
+  for (let y = y0; y <= y1; y++) {
+    const dy = (y + 0.5 - ly) * sy, dy2 = dy * dy;
+    for (let x = x0; x <= x1; x++) {
+      const i = y * W + x, dx = x + 0.5 - lx, dz = (ZD[i] - lz) * zk, d2 = dx * dx + dy2 + dz * dz;
+      if (d2 >= R2) continue;
+      const lvl = (1 - Math.sqrt(d2) / R) * str * on;
+      // narrow dither: only the middle of each step is dithered, so the wash reads as colour, not sparkle
+      if (lvl > 4.5 + bay(x, y) * 0.5) FB[i] = lut[FB[i]];
+      if (lvl - 16 > 4.5 + bay(x + 1, y + 2) * 0.5) FB[i] = lut[FB[i]];
+    }
+  }
+}
+
+// ---- wet reflections ----
+// RB: the scene draws its bright sources mirrored into RB (screen space). WET: 1 = wet floor, 2 = puddle.
+// Rows ripple sideways (a step every 8 frames) only where rowJitter is set; puddles reflect more densely.
+function kReflect(RB, WET, refl, y0, y1, jitterFrom, dens, pdens) {
+  const wob = frame >> 3;
+  for (let y = y0; y <= y1; y++) {
+    const jx = y >= jitterFrom ? ((hash(y * 73 + wob) * 3) | 0) - 1 : 0;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x, w = WET[i]; if (!w) continue;
+      const sx = x + jx; if (sx < 0 || sx >= W) continue;
+      const v = RB[y * W + sx]; if (v === CLEAR) continue;
+      if ((w === 2 ? pdens : dens) > bay(x, y)) FB[i] = refl[v];
+    }
+  }
+}
+// A light's streak down a wet floor: the classic neon smear, dithered and thinning with distance from the source.
+function kStreak(WET, x, yA, yB, c, c2, wid, dens) {
+  for (let y = yA; y <= yB; y++) {
+    const f = 1 - (y - yA) / Math.max(1, yB - yA + 1), lv = dens * f;
+    for (let k = -wid; k <= wid; k++) {
+      const X = x + k; if (X < 0 || X >= W || y < IMG_TOP || y >= IMG_BOT) continue;
+      const i = y * W + X; if (!WET[i]) continue;
+      const l = lv * (1 - Math.abs(k) / (wid + 1));
+      if (l > bay(X, y)) FB[i] = l > 11 && k === 0 ? c : c2;
+    }
+  }
+}
+
+// ---- neon signs: a baked layout (0 panel, 1 tube border, 2 glyph strokes), drawn lit or dark ----
+function kSignLayout(w, h, seed, vertical) {
+  const L = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) L[y * w + x] = (x === 0 || y === 0 || x === w - 1 || y === h - 1) ? 1 : 0;
+  const cells = vertical ? Math.max(1, Math.floor((h - 4) / (w - 1))) : Math.max(1, Math.floor((w - 4) / (h - 1)));
+  for (let g = 0; g < cells; g++) {                                   // one blocky glyph per cell: bar, stem, cross stroke, tick
+    const gx0 = vertical ? 2 : 2 + g * (h - 1), gy0 = vertical ? 2 + g * (w - 1) : 2, cw = vertical ? w - 4 : h - 3, ch = vertical ? w - 3 : h - 4;
+    for (let x = 0; x < cw; x++) L[(gy0) * w + gx0 + x] = 2;
+    const sx = gx0 + ((hash(seed + g * 17) * cw) | 0);
+    for (let y = 0; y < ch; y++) L[(gy0 + y) * w + sx] = 2;
+    const hy = gy0 + 1 + ((hash(seed + g * 29 + 5) * (ch - 2)) | 0);
+    for (let x = 0; x < cw; x++) if (hash(seed + g * 7 + x) < 0.8) L[hy * w + gx0 + x] = 2;
+    if (hash(seed + g * 3 + 1) < 0.6) L[(gy0 + ch - 1) * w + gx0] = 2;
+  }
+  return L;
+}
+function kSignDraw(L, w, h, x0, y0, on, panel, tubeOn, tubeOff, glyphOn, glyphOff) {
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = L[y * w + x]; px(x0 + x, y0 + y, v === 0 ? panel : v === 1 ? (on ? tubeOn : tubeOff) : (on ? glyphOn : glyphOff)); }
+}
+// FLICKER neon-buzz: short bursts at fixed times (sputtering every other frame), otherwise steady. Loops exactly.
+function kBurst(bursts, dur, seed) {
+  for (let b = 0; b < bursts.length; b++) if (gT >= bursts[b] && gT < bursts[b] + dur) return hash((frame >> 1) * 31 + seed) > 0.5 ? 1 : 0.1;
+  return 1;
+}
+function kBuzz(seed, p) { return hash((frame >> 2) * 7 + seed) < p ? 0.15 : 1; }   // a tube that drops out now and then
+
+// ---- brick, side-on: staggered courses, 1 px mortar, a few lighter / darker bricks, grime streaks under openings ----
+function kBrick(x, y, course, len, lit, base, dark, mortar, seed) {
+  const row = Math.floor(y / course), off = (row & 1) * (len >> 1), bx = Math.floor((x + off) / len);
+  if (y - row * course === course - 1 || (x + off) - bx * len === 0) return mortar;
+  const r = hash(row * 131 + bx * 7 + seed);
+  return r < 0.18 ? lit : r > 0.86 ? dark : base;
+}
+
+// ---- rain as a pure function of loop time (loops exactly): drops fall along slanted lines, splash where they land ----
+// Each drop wraps a whole number of times per loop; its column changes every wrap (hashed from the wrap index).
+const KR_MAX = 320, KRV = new Uint16Array(KR_MAX), KRY0 = new Float32Array(KR_MAX), KRK = new Float32Array(KR_MAX), KRF = new Int16Array(KR_MAX);
+let KR_N = 0, KR_H = 150, KR_SLANT = 0.16;
+function kRainInit(n, fallH, slant, floorY0, floorY1) {
+  KR_N = n; KR_H = fallH; KR_SLANT = slant;
+  for (let k = 0; k < n; k++) {
+    const kk = 0.25 + hash(k * 3 + 11) * 0.75;                           // near drops fall faster and streak longer
+    KRK[k] = kk; KRV[k] = Math.round((130 + 210 * kk) * LOOP / fallH);   // wraps per loop (an integer)
+    KRY0[k] = hash(k * 5 + 3) * fallH;
+    KRF[k] = floorY0 + Math.floor(hash(k * 7 + 1) * (floorY1 - floorY0));
+  }
+}
+// backlit drops: near a registered light, a drop takes that light's colour
+const KB_MAX = 12, KBX = new Float32Array(KB_MAX), KBY = new Float32Array(KB_MAX), KBRX = new Float32Array(KB_MAX), KBRY = new Float32Array(KB_MAX), KBC = new Uint8Array(KB_MAX), KBON = new Uint8Array(KB_MAX);
+let KB_N = 0;
+function kBacklight(i, x, y, rx, ry, c, on) { KBX[i] = x; KBY[i] = y; KBRX[i] = rx; KBRY[i] = ry; KBC[i] = c; KBON[i] = on ? 1 : 0; if (i >= KB_N) KB_N = i + 1; }
+function kRainDraw(rn0, rn1, splash, fade) {
+  for (let k = 0; k < KR_N; k++) {
+    const kk = KRK[k]; if (kk < 0.45 && (k & 1)) continue;             // far drops: a fixed sparse subset
+    const p = KRY0[k] + KRV[k] * KR_H * gT / LOOP, wrap = Math.floor(p / KR_H), fy = p - wrap * KR_H;
+    const x0 = hash(k * 13 + (wrap % KRV[k]) * 7) * (W + 40) - 20, fl = KRF[k], y = IMG_TOP - 6 + fy * (fl - IMG_TOP + 6) / KR_H, x = x0 + KR_SLANT * (y - IMG_TOP);
+    const L = 2 + Math.round(4 * kk);
+    if (fy > KR_H - 4 && splash) {                                      // landing: a small splash for a few frames
+      const X = Math.round(x), Y = fl; if (X > 0 && X < W - 1 && Y >= IMG_TOP && Y < IMG_BOT) { px(X - 1, Y - 1, rn1); px(X + 1, Y - 1, rn1); if (kk > 0.6) px(X, Y - 2, rn0); }
+      continue;
+    }
+    let c = kk > 0.65 ? rn0 : rn1;
+    for (let b = 0; b < KB_N; b++) { if (!KBON[b]) continue; const u = (x - KBX[b]) / KBRX[b], v = (y - KBY[b]) / KBRY[b]; if (u * u + v * v < 1) { c = KBC[b]; break; } }
+    for (let j = 0; j < L; j++) px(Math.round(x - KR_SLANT * j), Math.round(y - j), j === 0 ? c : (c === rn0 || c === rn1 ? rn1 : fade[c]));
+  }
+}
+
+// ---- foreground: near-black shapes, a dithered fringe only in concavities, a light bounce on top edges ----
+// FGB values: 1 solid, 2 fringe (checker), 3 bounce edge.
+function kFgSoften(FGB, bw, bh, bounceRows) {
+  const cnt = new Uint8Array(bw * bh);
+  for (let y = 1; y < bh - 1; y++) for (let x = 1; x < bw - 1; x++) {
+    let n = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if ((dx || dy) && FGB[(y + dy) * bw + x + dx] === 1) n++;
+    cnt[y * bw + x] = n;
+  }
+  for (let i = 0; i < bw * bh; i++) {
+    if (FGB[i] === CLEAR && cnt[i] >= 3) FGB[i] = 2;
+    else if (FGB[i] === 1 && i >= bw && FGB[i - bw] === CLEAR && Math.floor(i / bw) >= bounceRows) FGB[i] = 3;
+  }
+}
+function kFgDraw(FGB, bw, ox, dark, bounce) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const v = FGB[y * bw + x + ox]; if (v === CLEAR) continue;
+    const i = y * W + x;
+    if (v === 1) FB[i] = dark; else if (v === 2) { if ((x + y) & 1) FB[i] = dark; } else FB[i] = bay(x, y) < 8 ? bounce : dark;
+  }
+}
+
+// ---------- ramps (dark -> lit) and the look's colour tables, all built by the kit ----------
+const R_SKY = [SY0, SY1, SY2, SY3], R_FOG = [FG2, FG1, FG0], R_BRK = [BK2, BK1, BK0], R_STL = [CN2, CN1, CN0], R_GND = [GR2, GR1, GR0];
+const R_COAT = [TC2, TC1, TC0], R_SKIN = [SN1, SN0], R_HAIR = [HR0], R_UMB = [UB1, UB0], R_TRN = [TR2, TR1, TR0, TR3], R_LINE = [YL0];
+const R_NM = [NM3, NM2, NM1, NM0], R_NC = [NC3, NC2, NC1, NC0], R_WT = [WT1, WT0], R_AM = [AM2, AM1, AM0], R_TW = [TW1, TW0], R_RN = [RN1, RN0];
+const MATS = [R_SKY, R_FOG, R_BRK, R_STL, R_GND, R_COAT, R_SKIN, R_HAIR, R_UMB, R_TRN, R_LINE];
+const LIGHTS = [R_NM, R_NC, R_WT, R_AM, R_TW, R_RN];
+const LIGHT_M = kTint(MATS, NM3, NM2, NM1), LIGHT_C = kTint(MATS, NC3, NC2, NC1), LIGHT_A = kTint(MATS, AM2, AM1, AM0);
+const LIGHT = kStep(MATS.concat(LIGHTS), 1), SHADE = kStep(MATS.concat(LIGHTS), -1, undefined, K1);
+SHADE[K1] = K0;
+const REFL = kRefl(LIGHTS, MATS, K1), FOGL = kFogStep([R_BRK, R_STL, R_GND, R_TRN], R_FOG);
+NORIM[TR3] = 1;
+// a headlight in the rain lights the air itself: everything in the cone moves toward a violet-white haze
+const HEADL = kTint(MATS, FG2, FG1, WT1); HEADL[K1] = FG2; HEADL[K0] = K1; HEADL[FG2] = FG1; HEADL[FG1] = FG0; HEADL[FG0] = WT1;
+
+// ---------- the departure board's 3x5 font ----------
+const F35 = {
+  '0': '111101101101111', '1': '010110010010111', '2': '111001111100111', '4': '101101111001001', '7': '111001010010010',
+  ':': '000010000010000', '-': '000000111000000', ' ': '000000000000000',
+  A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110', E: '111100110100111',
+  G: '011100101101011', I: '111010010010111', L: '100100100100111', N: '101111111111101', O: '010101101101010',
+  P: '110101110100100', R: '110101110101101', S: '011100010001110', T: '111010010010010', V: '101101101101010'
+};
+function text35(s, x0, y0, c, clipX0, clipX1) {
+  for (let i = 0; i < s.length; i++) {
+    const g = F35[s[i]]; if (!g) continue;
+    for (let r = 0; r < 5; r++) for (let q = 0; q < 3; q++) if (g.charCodeAt(r * 3 + q) === 49) { const x = x0 + i * 4 + q; if (x >= clipX0 && x <= clipX1) px(x, y0 + r, c); }
+  }
+}
+
+// ---------- timeline (48 s) ----------
+// walk in 0-8 · close umbrella 8-9.8 · walk to the vending machine 9.8-16 · buy 16-18 · back to the board 18-19.8
+// wait 19.8-24.4 (look up, open, sip) · turn to the train 24.4 · train arrives 24-31 · boards (hidden) · departs 35-41 · empty
+function kf(t, t0, t1, a, b) { return t <= t0 ? a : t >= t1 ? b : lerp(a, b, easeSine((t - t0) / (t1 - t0))); }
+const CM = { x: 0, vis: 1, face: 1, walking: 0, umb: 0, reach: 0, bend: 0, can: 0, sip: 0, look: 0 };
+function commuterAt(t) {
+  const C = CM; C.vis = t < 31.5 ? 1 : 0; C.face = 1; C.walking = 0; C.reach = 0; C.bend = 0; C.can = 0; C.sip = 0; C.look = 0;
+  C.umb = t < 8 ? 0 : t < 9.8 ? easeSine((t - 8.2) / 1.4) : 1;
+  if (t < 8) { C.x = kf(t, 0, 8, -24, 162); C.walking = 1; }
+  else if (t < 9.8) C.x = 162;
+  else if (t < 16) { C.x = kf(t, 9.8, 16, 162, 314); C.walking = 1; }
+  else if (t < 18) {
+    C.x = 314;
+    C.reach = t < 16.6 ? kf(t, 16, 16.3, 0, 1) : t < 17 ? kf(t, 16.6, 16.8, 1, 0) : 0;   // press a button
+    C.bend = t < 17 ? 0 : t < 17.6 ? kf(t, 17, 17.3, 0, 1) : kf(t, 17.6, 17.95, 1, 0);   // bend to the slot
+    C.can = t >= 17.4 ? 1 : 0;
+  } else if (t < 19.8) { C.x = kf(t, 18.2, 19.8, 314, 278); C.face = -1; C.walking = t >= 18.2 ? 1 : 0; C.can = 1; }
+  else {
+    C.x = 278; C.can = 1; C.face = t < 24.4 ? -1 : 1;
+    C.look = t < 20.2 ? 0 : t < 21.6 ? kf(t, 20.2, 20.6, 0, 1) : kf(t, 21.6, 21.9, 1, 0); // up at the board
+    C.sip = t < 22.3 ? 0 : t < 23.3 ? kf(t, 22.3, 22.6, 0, 1) : kf(t, 23.3, 23.6, 1, 0);
+  }
+}
+// distance walked, for the gait (pure: integrate the path once at load)
+const GAIT = new Float32Array(LOOP_FRAMES);
+{ let d = 0, px0 = null; for (let f = 0; f < LOOP_FRAMES; f++) { commuterAt(f / 60); if (px0 !== null && CM.walking) d += Math.abs(CM.x - px0); px0 = CM.x; GAIT[f] = d; } }
+
+// the train: 3 cars, cab on the left (it arrives from the right), stops 31-35, then pulls out to the left
+const TRAIN_L = 484, T_ARR = 24, T_STOP = 31, T_DEP = 35, T_OUT = 41, STOP_X = 152;
+function trainX(t) {
+  if (t < T_ARR || t >= T_OUT) return 1e4;
+  if (t < T_STOP) { const u = (t - T_ARR) / (T_STOP - T_ARR); return STOP_X + 560 * (1 - u) * (1 - u); }
+  if (t < T_DEP) return STOP_X;
+  const u = (t - T_DEP) / (T_OUT - T_DEP); return STOP_X - 660 * u * u;
+}
+function camAt(t) {
+  if (t < 16) return t < 3.6 ? 0 : kf(t, 3.6, 16, 0, 160);
+  return t < 39.5 ? 160 : kf(t, 39.5, LOOP, 160, 0);
+}
+function boardLines(t) { return t < 23.5 ? 0 : t < 31 ? 1 : t < 35.2 ? 2 : t < 45 ? 3 : 0; }   // schedule, arriving, boarding, departed
+
+// ---------- layers: sky (screen), far skyline 0.2, near skyline 0.45, station 1.0 (back / columns / masts), foreground 1.4 ----------
+const P_FAR = 0.2, P_MID = 0.45, P_FG = 1.4;
+const FARW = W + Math.ceil((WW - W) * P_FAR), MIDW = W + Math.ceil((WW - W) * P_MID), FGW = W + Math.ceil((WW - W) * P_FG);
+const SKYB = new Uint8Array(W * H), FARB = new Uint8Array(FARW * H), MIDB = new Uint8Array(MIDW * H);
+const PLAY = new Uint8Array(WW * H), COLS = new Uint8Array(WW * H), MAST = new Uint8Array(WW * H), FGB = new Uint8Array(FGW * H);
+const ZPL = new Float32Array(WW * H), WETB = new Uint8Array(WW * H);
+const WALL_TOP = 60, FLOOR0 = 118, FLOOR1 = 127, EDGE1 = 131, TRACK0 = 132, RAIL_F = 139, RAIL_N = 150;
+const CAN_X0 = 150, CAN_X1 = 474, COL_X = new Int16Array([164, 292, 420]), MAST_X = new Int16Array([64, 246, 428]);
+const ARCH_X = new Int16Array([34, 110, 186, 262, 414]), ARCH_LIT = new Uint8Array([0, 1, 0, 1, 1]);
+const VM_X0 = 318, VM_X1 = 348, VM_Y0 = 86;
+const BOARD_X = 196, BOARD_Y = 63, BOARD_W = 38, BOARD_H = 14, SIGN_X = 240, SIGN_Y = 61, SIGN_W = 10, SIGN_H = 25;
+const LAMP_X = 64, LAMP_Y = 66, TUBE_X0 = 358, TUBE_X1 = 374, TUBE_Y = 60;
+const SIGNL = kSignLayout(SIGN_W, SIGN_H, 57, true);
+
+function bakeSky() {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) {
+    const t = (y - IMG_TOP) / (WALL_TOP - IMG_TOP), k = clamp(t * 3.2, 0, 2.999), b = Math.floor(k), f = k - b;
+    for (let x = 0; x < W; x++) { let c = (f - 0.35) * 26 > bay(x, y) ? R_SKY[b + 1] : R_SKY[b]; if (t > 0.86 && (t - 0.86) * 90 > bay(x, y)) c = FG2; SKYB[y * W + x] = c; }
+  }
+}
+function bakeSkyline() {
+  FARB.fill(CLEAR); MIDB.fill(CLEAR);
+  let x = -4;
+  while (x < FARW) {                                                   // far towers: hazy, sparse lit windows
+    const w = 10 + Math.floor(rnd() * 22), top = 30 + Math.floor(rnd() * 22);
+    for (let yy = top; yy < 64; yy++) for (let xx = x; xx < x + w && xx < FARW; xx++) if (xx >= 0) FARB[yy * FARW + xx] = (yy - top > 2 && ((xx - x) % 3 === 1) && ((yy - top) % 3 === 1) && hash(xx * 7 + yy * 13) < 0.22) ? FG1 : FG2;
+    if (rnd() < 0.3) for (let yy = top - 6; yy < top; yy++) if (x + (w >> 1) < FARW && x + (w >> 1) >= 0) FARB[yy * FARW + x + (w >> 1)] = FG2;
+    x += w + Math.floor(rnd() * 5) - 1;
+  }
+  x = -6;
+  while (x < MIDW) {                                                   // nearer blocks: darker, amber windows in a grid
+    const w = 16 + Math.floor(rnd() * 26), top = 36 + Math.floor(rnd() * 18);
+    for (let yy = top; yy < 64; yy++) for (let xx = x; xx < x + w && xx < MIDW; xx++) {
+      if (xx < 0) continue;
+      const lx = xx - x, ly = yy - top, win = ly > 2 && lx % 4 === 2 && ly % 4 === 2;
+      MIDB[yy * MIDW + xx] = yy === top ? SY3 : win ? (hash(xx * 31 + yy * 17) < 0.35 ? (hash(xx + yy) < 0.5 ? AM1 : AM2) : SY1) : SY2;
+    }
+    if (rnd() < 0.35) { const tx = x + 3, ty = top - 5; for (let yy = ty; yy < top; yy++) for (let xx = tx; xx < tx + 5; xx++) if (xx >= 0 && xx < MIDW) MIDB[yy * MIDW + xx] = SY1; }   // water tank
+    x += w + Math.floor(rnd() * 4);
+  }
+  // a tall cyan blade sign and a magenta rooftop billboard on the near skyline
+  target(MIDB, MIDW, H, 0, 0);
+  const BX = 212, BL = kSignLayout(7, 20, 91, true);
+  kSignDraw(BL, 7, 20, BX, 36, true, K1, NC1, NC3, NC0, NC2);
+  rect(96, 38, 30, 9, K1); rect(97, 39, 28, 7, NM2); hline(98, 123, 41, NM0); hline(98, 110, 43, NM1); vline(96, 38, 46, NM1); vline(125, 38, 46, NM1);
+  vline(100, 47, 54, SY1); vline(121, 47, 54, SY1);
+}
+function bakeStation() {
+  PLAY.fill(CLEAR); COLS.fill(CLEAR); MAST.fill(CLEAR); WETB.fill(0);
+  for (let y = WALL_TOP; y < IMG_BOT; y++) for (let x = 0; x < WW; x++) {
+    const i = y * WW + x; let c, z;
+    if (y < FLOOR0) {                                                  // brick arcade wall, coping, concrete plinth
+      z = 5; c = kBrick(x, y - WALL_TOP, 4, 8, BK0, BK1, BK2, BK2, 3);
+      if (y < WALL_TOP + 3) c = y === WALL_TOP ? CN0 : CN1;
+      else if (y >= 112) c = y === 112 ? CN1 : CN2;
+      const pm = (x + 4) % 76;                                          // pilasters: lit left edge, shaded right
+      if (pm < 6 && y >= WALL_TOP + 3 && y < 112) c = pm === 0 ? BK0 : pm === 5 ? BK2 : c === BK2 ? BK2 : BK1;
+    } else if (y <= FLOOR1) {                                          // wet platform floor with the yellow edge line
+      z = 5 - (y - FLOOR0) / (FLOOR1 - FLOOR0) * 1.4;
+      c = hash(x * 7919 + y * 31) < 0.1 ? GR0 : GR1;
+      if ((x % 12) === 0 && y > FLOOR0 && y < 124) c = GR2;
+      if (y === 124 || y === 125) c = (x & 1) && y === 125 ? GR2 : YL0;
+      if (y === FLOOR1) c = CN1;
+      if (y < FLOOR1) WETB[i] = 1;
+    } else if (y <= EDGE1) { z = 3.5; c = y === 128 ? CN2 : ((x * 13) % 17 === 0 ? GR2 : CN2); }
+    else {                                                             // track bed: ballast, sleepers, two rails, puddles
+      z = 3.4 - (y - TRACK0) / (IMG_BOT - TRACK0) * 1.8;
+      const r = hash(x * 131 + y * 71);
+      c = r < 0.2 ? GR1 : r < 0.3 ? K1 : GR2;
+      if ((x & 7) < 4 && y >= RAIL_F - 1 && y <= RAIL_N + 2) c = y === RAIL_F - 1 ? BK1 : BK2;
+      if (y === RAIL_F || y === RAIL_N) c = CN1;
+      if (y === RAIL_F - 1 + 0 && (x & 7) >= 4) c = GR2;
+      if (y === RAIL_N - 1 || y === RAIL_F - 2) c = CN0;
+    }
+    PLAY[i] = c; ZPL[i] = z;
+  }
+  for (let p = 0; p < 16; p++) {                                        // puddles between the rails (dark mirrors)
+    const cx = 12 + rnd() * (WW - 24), cy = 142 + rnd() * 6, rx = 5 + rnd() * 9, ry = 1.4 + rnd();
+    for (let y = Math.floor(cy - ry); y <= cy + ry; y++) for (let x = Math.floor(cx - rx); x <= cx + rx; x++) {
+      const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry; if (u * u + v * v > 1 || x < 0 || x >= WW) continue;
+      const i = y * WW + x; PLAY[i] = v < -0.5 && bay(x, y) < 6 ? GR0 : GR2; WETB[i] = 2;
+    }
+  }
+  target(PLAY, WW, H, 0, 0);
+  // arched windows: the waiting room lit amber (people sitting), the others dark glass with a sky reflection
+  for (let a = 0; a < ARCH_X.length; a++) {
+    const cx = ARCH_X[a], lit = ARCH_LIT[a];
+    for (let y = 68; y <= 105; y++) for (let x = cx - 14; x <= cx + 13; x++) {
+      const dx = x + 0.5 - cx, inRound = y < 82 ? dx * dx + (y - 82) * (y - 82) : dx * dx;
+      const outer = y < 82 ? inRound <= 14 * 14 : Math.abs(dx) <= 14, inner = y < 82 ? inRound <= 11.5 * 11.5 : Math.abs(dx) <= 11.5;
+      if (!outer || y > 104) continue;
+      const i = y * WW + x;
+      if (!inner) { PLAY[i] = y < 82 ? (((Math.atan2(y - 82, dx) * 6) | 0) & 1 ? BK0 : BK1) : BK1; continue; }   // voussoirs + jambs
+      if (lit) PLAY[i] = y < 84 ? (y < 76 ? AM0 : AM1) : (y > 96 && Math.abs(dx - 4) < 3 + (y > 99 ? 1 : 0)) || (y > 97 && Math.abs(dx + 6) < 2.5) ? K1 : AM1;
+      else PLAY[i] = (Math.abs(dx + y * 0.6 - 60) % 9) < 1.2 ? FG2 : GR2;
+      if (Math.abs(dx) < 0.6 || y === 90) PLAY[i] = lit ? AM2 : K1;   // mullions
+    }
+    hline(cx - 14, cx + 13, 105, CN0); hline(cx - 14, cx + 13, 106, CN1);   // sill
+  }
+  // vending machines (fronts face the platform), a poster and a bench
+  for (let m = 0; m < 2; m++) {
+    const x0 = VM_X0 + m * 16;
+    rect(x0, VM_Y0, 15, FLOOR0 - VM_Y0, CN2); vline(x0, VM_Y0, FLOOR0 - 1, CN1);
+    rect(x0 + 2, VM_Y0 + 2, 11, 2, NC0); rect(x0 + 2, VM_Y0 + 5, 9, 13, NC2);
+    for (let r = 0; r < 3; r++) for (let q = 0; q < 4; q++) px(x0 + 3 + q * 2, VM_Y0 + 7 + r * 4, (q + r + m) % 3 === 0 ? AM0 : (q + r) & 1 ? NC0 : NM1);
+    for (let q = 0; q < 4; q++) px(x0 + 12, VM_Y0 + 7 + q * 3, NC1);
+    rect(x0 + 3, VM_Y0 + 23, 8, 3, K1); hline(x0 + 3, x0 + 10, VM_Y0 + 22, CN1);
+  }
+  rect(356, 80, 23, 21, CN1); rect(357, 81, 21, 19, FG2); ellipse(371, 87, 4, 4, FG0); for (let x = 358; x < 377; x++) px(x, 99 - ((x * 3) % 5 === 0 ? 1 : 0), FG1);
+  rect(276, 108, 29, 2, CN1); hline(276, 304, 108, CN0); rect(276, 101, 29, 2, CN1); vline(278, 110, 117, K1); vline(302, 110, 117, K1); vline(279, 103, 107, CN2); vline(301, 103, 107, CN2);
+  // the canopy: steel fascia over the covered part, underside, hanging rods for the board and the sign
+  for (let x = CAN_X0; x <= CAN_X1; x++) { for (let y = 51; y <= 56; y++) PLAY[y * WW + x] = y === 51 ? CN0 : y === 56 ? CN1 : CN2; PLAY[57 * WW + x] = K1; PLAY[58 * WW + x] = CN2; }
+  for (let x = CAN_X0; x <= CAN_X1; x += 18) vline(x, 51, 56, K1);
+  vline(BOARD_X + 4, 59, BOARD_Y - 1, K1); vline(BOARD_X + BOARD_W - 5, 59, BOARD_Y - 1, K1);
+  vline(SIGN_X + 2, 59, SIGN_Y - 1, K1); vline(SIGN_X + SIGN_W - 3, 59, SIGN_Y - 1, K1);
+  rect(BOARD_X, BOARD_Y, BOARD_W, BOARD_H, K1); hline(BOARD_X, BOARD_X + BOARD_W - 1, BOARD_Y, CN1);
+  rect(TUBE_X0 - 1, TUBE_Y - 1, TUBE_X1 - TUBE_X0 + 3, 1, CN1);
+  // lamp post on the open part of the platform
+  vline(LAMP_X, LAMP_Y + 4, FLOOR0 + 3, K1); vline(LAMP_X + 1, LAMP_Y + 4, FLOOR0 + 3, CN2); rect(LAMP_X - 2, FLOOR0 + 1, 6, 3, K1);
+  rect(LAMP_X - 2, LAMP_Y - 3, 6, 1, K1); rect(LAMP_X - 1, LAMP_Y - 2, 4, 5, AM1); px(LAMP_X, LAMP_Y - 1, AM0); px(LAMP_X + 1, LAMP_Y, AM0); rect(LAMP_X - 1, LAMP_Y + 3, 4, 1, K1);
+  // columns at the platform edge (in front of the commuter, behind the train)
+  target(COLS, WW, H, 0, 0);
+  for (let c = 0; c < COL_X.length; c++) { const x = COL_X[c]; vline(x, 58, 126, CN0); vline(x + 1, 58, 126, CN1); vline(x + 2, 58, 126, K1); rect(x - 1, 122, 5, 5, CN1); hline(x - 1, x + 3, 122, CN0); rect(x - 2, 58, 7, 2, CN1); }
+  // catenary: masts on the near side of the track, cantilever arms, messenger wire with droppers, contact wire
+  target(MAST, WW, H, 0, 0);
+  for (let m = 0; m < MAST_X.length; m++) {
+    const x = MAST_X[m];
+    rect(x, 46, 3, IMG_BOT - 46, CN2); vline(x, 46, IMG_BOT - 1, CN1); rect(x - 1, 44, 5, 2, CN1);
+    for (let y = 50; y < IMG_BOT; y += 6) px(x + 1, y, K1);
+    hline(x + 3, x + 16, 58, CN1); line(x + 3, 52, x + 14, 58, CN2); rect(x + 14, 59, 2, 3, CN0);   // arm, brace, insulator
+  }
+  for (let x = 0; x < WW; x++) {
+    let mi = 0; while (mi < MAST_X.length - 1 && x > MAST_X[mi + 1] + 15) mi++;
+    const a = MAST_X[mi] + 15, b = mi < MAST_X.length - 1 ? MAST_X[mi + 1] + 15 : WW + 160, u = clamp((x - a) / (b - a), 0, 1);
+    const ym = Math.round(59 + 3 * Math.sin(Math.PI * u));
+    MAST[ym * WW + x] = K1; MAST[64 * WW + x] = K1;
+    if (((x - a) % 16) === 8) for (let y = ym + 1; y < 64; y++) MAST[y * WW + x] = K1;
+  }
+}
+function bakeFG() {
+  FGB.fill(CLEAR); target(FGB, FGW, H, 0, 0);
+  rect(0, 153, FGW, 6, 1);                                             // edge of the next platform
+  rect(58, 141, 10, 13, 1); rect(57, 140, 12, 2, 1);                     // bin
+  rect(300, 104, 3, 50, 1); rect(297, 100, 9, 9, 1); ellipse(301.5, 104.5, 1.6, 1.6, CLEAR);   // signal post + head (lamp drawn live)
+  rect(470, 138, 3, 16, 1); rect(490, 138, 3, 16, 1); rect(468, 138, 27, 2, 1);                // barrier rail
+  kFgSoften(FGB, FGW, H, 120);
+}
+
+// ---------- the commuter (side view, facing right; mirrored for left), redrawn on a 12 fps pose grid ----------
+const CBW = 48, CBH = 60, CAX = 24, CAY = 56;
+const CBUF = new Uint8Array(CBW * CBH);
+const LEGX = new Int8Array([3, 2, 0, -2, -3, -2, 0, 2]);
+let CANX = 0, CANY = 0, TIPX = 0, TIPY = 0, RIMX0 = 0, RIMX1 = 0, RIMY = 0;          // held can, umbrella tip, open canopy's rim (sprite-local)
+function thick(x0, y0, x1, y1, c) { line(x0, y0, x1, y1, c); line(x0 + 1, y0, x1 + 1, y1, c); }
+function drawCommuter(gf, walking, umb, reach, bend, can, sip, look) {
+  CBUF.fill(CLEAR); target(CBUF, CBW, CBH, CAX, CAY);
+  const bob = walking && (gf === 1 || gf === 5) ? -1 : 0, by = bob + Math.round(bend * 5), bx = Math.round(bend * 2);
+  const f = walking ? LEGX[gf] : 1, b = walking ? -LEGX[gf] : -1;
+  // far arm (swings, or carries the furled umbrella once she holds the can)
+  const farHandX = can ? -3 : walking ? -1 - Math.round(LEGX[gf] * 0.7) : -2, farHandY = -16 + by;
+  thick(-2 + bx, -28 + by, farHandX + bx, farHandY, TC2);
+  if (can && umb >= 1) { line(farHandX + bx, farHandY, farHandX - 4 + bx, -1, UB1); line(farHandX + 1 + bx, farHandY + 2, farHandX - 3 + bx, -4, UB0); px(farHandX - 4 + bx, -1, CN0); }
+  // legs: tights and shoes
+  thick(-1 + bx, -12 + by, b - 1, -1, UB1); hline(b - 2, b, 0, K1);
+  thick(0 + bx, -12 + by, f, -1, UB1); hline(f, f + 2, 0, K1);
+  // trench coat: flared to the knee, belt, lapel, raised collar
+  for (let y = -30; y <= -11; y++) {
+    const u = (y + 30) / 19, hw = 3.6 + u * 1.9, flare = walking && y > -15 ? (gf < 4 ? -1 : 1) : 0;
+    hline(Math.round(-hw) + bx + (y > -15 ? flare : 0), Math.round(hw) + bx + (y > -15 ? flare : 0), y + by, TC1);
+  }
+  hline(-4 + bx, 4 + bx, -20 + by, TC2); px(2 + bx, -20 + by, TC0);
+  line(2 + bx, -29 + by, 3 + bx, -21 + by, TC2); px(3 + bx, -16 + by, TC2); px(3 + bx, -13 + by, TC2);
+  hline(-2 + bx, 2 + bx, -31 + by, TC0);
+  // head: dark bob, face on the leading side
+  const hy = -38 + by + (look > 0.5 ? -1 : 0), fx = bx + (look > 0.5 ? 1 : 0);
+  rect(-3 + fx, hy + 1, 6, 6, SN0); px(-1 + fx, hy + 7, SN1);
+  rect(-4 + fx, hy, 6, 2, HR0); rect(-4 + fx, hy + 2, 3, 6, HR0); px(-1 + fx, hy + 2, HR0); px(2 + fx, hy + 1, HR0);
+  px(2 + fx, hy + (look > 0.5 ? 2 : 3), K1);                                          // eye
+  // near arm: umbrella, button, slot, can, sip
+  let hx, hyy;
+  if (sip > 0.5) { hx = 3; hyy = -33; } else if (bend > 0.5) { hx = 8; hyy = -7; } else if (reach > 0.5) { hx = 9; hyy = -22; }
+  else if (can) { hx = 5; hyy = -21; } else if (umb < 1) { hx = 3; hyy = -24; } else { hx = 4; hyy = -17; }
+  thick(1 + bx, -28 + by, hx + bx, hyy + (bend > 0.5 ? 0 : by), TC1);
+  const HX = hx + bx, HY = hyy + (bend > 0.5 ? 0 : by);
+  px(HX + 1, HY, SN0);
+  if (can) { rect(HX + 1, HY - 2, 2, 3, NC2); px(HX + 1, HY - 3, WT0); CANX = HX + 2; CANY = HY - 1; }
+  if (umb < 1) {
+    if (umb < 0.55) {                                                   // open, or folding: a dome that narrows
+      const k = umb / 0.55, rx = 14 - 9 * k, ry = 5 + 5 * k, cx = HX - 1, cy = HY - 20 + Math.round(4 * k);
+      vline(HX, cy, HY, K1);
+      for (let y = Math.floor(cy - ry); y <= cy; y++) { const w = rx * Math.sqrt(Math.max(0, 1 - ((y - cy) / ry) * ((y - cy) / ry))); hline(Math.round(cx - w), Math.round(cx + w), y, UB1); }
+      for (let s = -3; s <= 3; s++) px(Math.round(cx + s * rx / 3.5), cy + 1, UB1);    // scalloped rib tips
+      px(Math.round(cx), Math.floor(cy - ry) - 1, CN0);
+      RIMX0 = Math.round(cx - rx); RIMX1 = Math.round(cx + rx); RIMY = cy + 1;
+    } else {                                                            // furled, being lowered to her side
+      const k = (umb - 0.55) / 0.45, ex = HX + Math.round(4 * k), ey = Math.round(lerp(HY - 18, -1, k));
+      line(HX, HY, ex, ey, UB1); line(HX + 1, HY - (k < 0.5 ? 2 : -2), ex + 1, ey + (k < 0.5 ? 3 : -3), UB0); px(ex, ey, CN0);
+      TIPX = ex; TIPY = ey; RIMX0 = RIMX1 = 0;
+    }
+  } else if (!can) { line(HX, HY, HX + 4, -1, UB1); line(HX + 1, HY + 2, HX + 3, -5, UB0); px(HX + 4, -1, CN0); TIPX = HX + 4; TIPY = -1; RIMX0 = RIMX1 = 0; }
+  else { RIMX0 = RIMX1 = 0; TIPX = -7; TIPY = -1; }
+}
+
+// ---------- the train: baked body (3 cars), live wheels, headlight, pantograph ----------
+const TBH = 82, TY = 69, TRB = new Uint8Array(TRAIN_L * TBH);
+const WIN_PAS = new Uint8Array(64);
+function bakeTrain() {
+  TRB.fill(CLEAR); target(TRB, TRAIN_L, TBH, 0, 0);
+  for (let x = 0; x < TRAIN_L; x++) {
+    const car = Math.floor(x / 162), cx = x - car * 162;
+    if (cx >= 158) { for (let y = 12; y < 66; y++) TRB[y * TRAIN_L + x] = K1; continue; }   // gangway between cars
+    const nose = car === 0 ? Math.max(0, 16 - x) : 0;                                   // slanted cab nose on the lead car
+    for (let y = 4 + nose; y < 70; y++) {
+      let c = y < 9 ? (y === 4 + nose ? TR0 : TR1) : y < 40 ? TR2 : y < 43 ? (y === 40 ? NC1 : NC2) : y < 62 ? TR2 : y < 66 ? K1 : K1;   // dark steel: the neon does the lighting
+      if (y === 9) c = K1; if (y === 10 || y === 44) c = TR1;
+      TRB[y * TRAIN_L + x] = c;
+    }
+  }
+  // windows (lit, some with passengers), doors, cab windshield + destination sign, roof units
+  let w = 0;
+  for (let car = 0; car < 3; car++) {
+    const x0 = car * 162;
+    for (let k = 0; k < 7; k++) {
+      const wx = x0 + (car === 0 ? 26 : 10) + k * 20; if (wx + 14 > x0 + 156) continue;
+      const door = k === 2 || k === 5;
+      if (door) { rect(wx - 1, 12, 14, 50, K1); rect(wx, 13, 12, 48, TR2); vline(wx + 6, 13, 60, K1); rect(wx + 2, 16, 3, 14, TW0); rect(wx + 8, 16, 3, 14, TW0); continue; }
+      rect(wx - 1, 15, 16, 19, K1); rect(wx, 16, 14, 17, TW0); rect(wx, 26, 14, 7, TW1);
+      if (hash(w * 17 + 3) < 0.55) { const px0 = wx + 3 + ((hash(w * 7) * 7) | 0); rect(px0, 22, 4, 11, K1); rect(px0 - 1, 26, 6, 7, K1); }
+      WIN_PAS[w++] = wx;
+    }
+    rect(x0 + 30, 0, 22, 4, TR1); hline(x0 + 30, x0 + 51, 0, TR3); rect(x0 + 104, 0, 22, 4, TR1); hline(x0 + 104, x0 + 125, 0, TR3);
+  }
+  quad(1, 14, 16, 5, 16, 30, 4, 30, K1); line(3, 27, 14, 8, TR3);                       // windshield + reflection
+  rect(18, 5, 10, 3, K1); for (let x = 19; x < 27; x += 2) px(x, 6, AM0);               // destination sign
+  target(FB, W, H, 0, 0);
+}
+function drawWheels(xs, moving) {
+  const fr = moving ? (frame >> 2) & 1 : 0;
+  for (let car = 0; car < 3; car++) for (let bgi = 0; bgi < 2; bgi++) {
+    const bx = xs + car * 162 + (bgi ? 128 : 16);
+    rect(bx - 2, TY + 66, 26, 4, K1);
+    for (let wh = 0; wh < 2; wh++) { const cx = bx + 4 + wh * 14; ellipse(cx + 0.5, TY + 76.5, 5, 5, TR2); ellipse(cx + 0.5, TY + 76.5, 2, 2, TR1); px(cx + (fr ? 1 : -1) * 3, TY + 76, K1); px(cx, TY + 76 + (fr ? -3 : 3), K1); }
+  }
+}
+
+// ---------- per-frame state ----------
+const ZD = new Float32Array(W * H), WET = new Uint8Array(W * H), RB = new Uint8Array(W * H);
+let camF = 0, camI = 0, cmSX = 0, cmSY = 0, trX = 1e4, lastPose = -1, signOn = 1, tubeOn = 1, rimL = CLEAR, rimR = CLEAR, rimT = CLEAR;
+const PN = 90, PX_ = new Float32Array(PN), PY_ = new Float32Array(PN), PVX = new Float32Array(PN), PVY = new Float32Array(PN), PAGE = new Float32Array(PN), PLIFE = new Float32Array(PN), PKIND = new Uint8Array(PN);
+let pHead = 0;
+function emit(x, y, vx, vy, life, kind) { const i = pHead; pHead = (pHead + 1) % PN; PX_[i] = x; PY_[i] = y; PVX[i] = vx; PVY[i] = vy; PAGE[i] = 0; PLIFE[i] = life; PKIND[i] = kind; }
+const SIGN_BURSTS = new Float32Array([4.6, 19.2, 36.8]), DRIP_P = new Uint8Array([48, 60, 72, 80, 90, 96, 120, 144]);
+function update() {
+  const t = gT;
+  camF = camAt(t); camI = Math.round(camF);
+  const slot = Math.floor(frame / 5);
+  if (slot !== lastPose) {
+    lastPose = slot; const fq = slot * 5; commuterAt(fq / 60);
+    drawCommuter(Math.floor(GAIT[fq] / 4) & 7, CM.walking, CM.umb, CM.reach, CM.bend, CM.can, CM.sip, CM.look);
+  }
+  commuterAt(t); cmSX = Math.round(CM.x - camF); cmSY = FLOOR0 + 3;
+  trX = trainX(t);
+  signOn = kBurst(SIGN_BURSTS, 0.55, 7); tubeOn = kBuzz(3, 0.05);
+  const fl = CM.face < 0 ? -1 : 1;
+  // water off the umbrella: from the canopy's rim while it is open, from the furled tip for a while after
+  if (CM.vis && RIMX1 !== RIMX0 && (frame % 9) === 0) { const h = hash(frame * 3 + 1); emit(camI + cmSX + fl * (h < 0.5 ? RIMX0 : RIMX1), cmSY - CAY + CAY + RIMY, 0, 20, 0.6, 0); }
+  if (CM.vis && t > 9.4 && t < 13 && (frame % 14) === 0) emit(camI + cmSX + fl * TIPX, cmSY + TIPY, 0, 10, 0.4, 0);
+  // braking: sparks from the bogies
+  if (t > 29.2 && t < T_STOP && (frame % 2) === 0) for (let car = 0; car < 3; car++) { const h = hash(frame * 5 + car), bx = trX + car * 162 + 20 + (h < 0.5 ? 0 : 112); emit(bx, TY + 80, 30 + h * 50, -(10 + h * 30), 0.25 + h * 0.2, 1); }
+  for (let i = 0; i < PN; i++) {
+    if (PLIFE[i] <= 0) continue;
+    PAGE[i] += STEP; if (PAGE[i] >= PLIFE[i]) { PLIFE[i] = 0; continue; }
+    PVY[i] += (PKIND[i] === 0 ? 420 : 260) * STEP; PX_[i] += PVX[i] * STEP; PY_[i] += PVY[i] * STEP;
+    if (PKIND[i] === 0 && PY_[i] >= FLOOR0 + 4) { PY_[i] = FLOOR0 + 4; PLIFE[i] = Math.min(PLIFE[i], PAGE[i] + 0.06); }
+  }
+}
+
+// ---------- drawing helpers ----------
+function blitLayer(buf, bw, ox, z) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) { const s = y * bw + ox, d = y * W; for (let x = 0; x < W; x++) { const v = buf[s + x]; if (v !== CLEAR) { FB[d + x] = v; ZD[d + x] = z; } } }
+}
+function stampZ(buf, bw, bh, x0, y0, z, flip) {
+  for (let y = 0; y < bh; y++) { const Y = y0 + y; if (Y < IMG_TOP || Y >= IMG_BOT) continue; for (let x = 0; x < bw; x++) { const X = x0 + x; if (X < 0 || X >= W) continue; if (buf[y * bw + (flip ? bw - 1 - x : x)] !== CLEAR) ZD[Y * W + X] = z; } }
+}
+function drawBoard(bx) {
+  const st = boardLines(gT), x0 = bx + 2, y0 = BOARD_Y + 2;
+  target(FB, W, H, 0, 0);
+  text35(st === 3 ? '--:--' : '22:47', x0, y0, AM0, bx + 1, bx + BOARD_W - 2);
+  if (st === 0) { const off = Math.floor(frame / 4) % 120; text35('LAST TRAIN TO CENTRAL', x0 + BOARD_W - 4 - off, y0 + 6, AM1, bx + 1, bx + BOARD_W - 2); text35('LAST TRAIN TO CENTRAL', x0 + BOARD_W - 4 - off + 120, y0 + 6, AM1, bx + 1, bx + BOARD_W - 2); }
+  else if (st === 1) { if (cyc(48, 0) > -0.3) text35('ARRIVING', x0, y0 + 6, AM0, bx + 1, bx + BOARD_W - 2); }
+  else text35(st === 2 ? 'BOARDING' : 'DEPARTED', x0, y0 + 6, AM1, bx + 1, bx + BOARD_W - 2);
+}
+function rimFrom(lx, ly, str, R, c) {                                 // each screen side takes the strongest nearby light's colour
+  const dx = lx - cmSX, dy = ly - (cmSY - 22), infl = str / (1 + (dx * dx + dy * dy) / (R * R));
+  if (infl < 0.3) return;
+  if (Math.abs(dx) < 10 && dy < -14) { if (infl > rimTS) { rimTS = infl; rimT = c; } }
+  else if (dx < 0) { if (infl > rimLS) { rimLS = infl; rimL = c; } }
+  else if (infl > rimRS) { rimRS = infl; rimR = c; }
+}
+let rimLS = 0, rimRS = 0, rimTS = 0;
+function headlight(hx, hy) {
+  // a cone ahead of the train along the track, lighting the rain and the ballast
+  // it spreads down onto the track ahead: two steps of light in the core, the rails catch it as long glints
+  for (let a = 1; a < 190; a++) {
+    const x = hx - a; if (x < 0) break; if (x >= W) continue;
+    const up = 2 + a * 0.05, dn = 3 + a * 0.24, lv = 20 * Math.pow(1 - a / 190, 1.1);
+    for (let y = Math.max(IMG_TOP, Math.floor(hy - up)); y <= Math.min(IMG_BOT - 1, Math.ceil(hy + dn)); y++) {
+      const d = y < hy ? (hy - y) / up : (y - hy) / dn, l = lv * (1 - d), i = y * W + x;
+      if (l > 3 + bay(x, y) * 0.55) FB[i] = HEADL[FB[i]];
+      if (l - 10 > 3 + bay(x + 1, y) * 0.55) FB[i] = HEADL[FB[i]];
+      if ((y === RAIL_F - 1 || y === RAIL_N - 1) && l > 5) FB[i] = l > 12 ? WT0 : WT1;
+    }
+  }
+  glow(hx + 0.5, hy + 0.5, 10, 6, LIGHT, 16); rect(hx - 1, hy - 1, 3, 2, WT0);
+  for (let k = 3; k < 34; k++) { if (k < 14 || ((k + frame) & 1)) { px(hx - k, hy, k < 10 ? WT0 : WT1); if (hx + k < W) px(hx + k, hy, k < 10 ? WT0 : WT1); } }   // glare streak
+}
+
+// ---------- render ----------
+function render() {
+  const t = gT;
+  FB.set(SKYB); ZD.fill(99); WET.fill(0);
+  blitLayer(FARB, FARW, Math.round(camF * P_FAR), 60);
+  blitLayer(MIDB, MIDW, Math.round(camF * P_MID), 30);
+  // the station
+  for (let y = IMG_TOP; y < IMG_BOT; y++) {
+    const s = y * WW + camI, d = y * W;
+    for (let x = 0; x < W; x++) { const v = PLAY[s + x]; if (v !== CLEAR) { FB[d + x] = v; ZD[d + x] = ZPL[s + x]; WET[d + x] = WETB[s + x]; } }
+  }
+  target(FB, W, H, 0, 0);
+  // emissive signs: ramen sign (flickers), board, tube, lamp head
+  const sx = SIGN_X - camI, bx = BOARD_X - camI, tx0 = TUBE_X0 - camI, lx = LAMP_X - camI;
+  kSignDraw(SIGNL, SIGN_W, SIGN_H, sx, SIGN_Y, signOn > 0.5, K1, NM1, NM3, NM0, NM2);
+  drawBoard(bx);
+  hline(tx0, tx0 + TUBE_X1 - TUBE_X0, TUBE_Y, tubeOn > 0.5 ? WT0 : WT1);
+  if (t >= 16.75 && t < 16.9) rect(VM_X0 + 3 - camI, VM_Y0 + 23, 8, 3, NC0);           // the can drops: the slot lights up
+  // wet floor: the lights smear down it, the commuter and the machines' feet reflect in it
+  kStreak(WET, lx, FLOOR0, IMG_BOT - 1, AM0, AM1, 0, 12);
+  if (signOn > 0.5) kStreak(WET, sx + 5, FLOOR0, IMG_BOT - 1, NM1, NM2, 1, 13);
+  kStreak(WET, VM_X0 + 7 - camI, FLOOR0, IMG_BOT - 1, NC1, NC2, 1, 12); kStreak(WET, VM_X0 + 23 - camI, FLOOR0, IMG_BOT - 1, NC1, NC2, 1, 12);
+  if (tubeOn > 0.5) kStreak(WET, tx0 + 8, FLOOR0, IMG_BOT - 1, WT0, WT1, 0, 9);
+  kStreak(WET, bx + 19, FLOOR0, IMG_BOT - 1, AM1, AM2, 1, 7);
+  for (let a = 0; a < ARCH_X.length; a++) if (ARCH_LIT[a]) kStreak(WET, ARCH_X[a] - camI, FLOOR0, 126, AM1, AM2, 2, 6);
+  RB.fill(CLEAR);
+  if (CM.vis) {                                                       // the commuter mirrored about her feet line
+    const fl = CM.face < 0;
+    for (let y = 0; y < 14; y++) { const sy = CAY - y, Y = cmSY + y + 1; if (Y >= IMG_BOT) break; for (let x = 0; x < CBW; x++) { const v = CBUF[sy * CBW + (fl ? CBW - 1 - x : x)], X = cmSX - CAX + x; if (v !== CLEAR && X >= 0 && X < W) RB[Y * W + X] = v; } }
+  }
+  for (let y = 0; y < 8; y++) for (let x = VM_X0; x <= VM_X1; x++) { const X = x - camI, Y = FLOOR0 + y; if (X >= 0 && X < W) RB[Y * W + X] = PLAY[(FLOOR0 - 1 - y) * WW + x]; }
+  kReflect(RB, WET, REFL, FLOOR0, IMG_BOT - 1, FLOOR0 + 3, 9, 13);
+  // the commuter: rims from the nearest light on each side (and above), no outline: neon-noir reads by its rims
+  rimL = rimR = rimT = CLEAR; rimLS = rimRS = rimTS = 0;
+  rimFrom(lx, LAMP_Y, 1.3, 40, AM0); rimFrom(bx + 19, BOARD_Y + 6, 0.9, 30, AM1);
+  if (signOn > 0.5) rimFrom(sx + 5, SIGN_Y + 12, 1.5, 44, NM1);
+  rimFrom(VM_X0 + 15 - camI, VM_Y0 + 14, 1.5, 38, NC1);
+  if (tubeOn > 0.5) rimFrom(tx0 + 8, TUBE_Y, 1.2, 40, WT0);
+  if (CM.vis && cmSX > -30 && cmSX < W + 30) {
+    const fl = CM.face < 0;
+    blitLit(CBUF, CBW, CBH, cmSX - (fl ? CBW - 1 - CAX : CAX), cmSY - CAY, fl, rimR, rimL, rimT, CLEAR, 0, 2, SHADE, 1, LIGHT);
+    stampZ(CBUF, CBW, CBH, cmSX - (fl ? CBW - 1 - CAX : CAX), cmSY - CAY, 4.2, fl);
+  }
+  blitLayer(COLS, WW, camI, 3.6);                                        // columns: in front of her, behind the train
+  // the train, in front of the platform; then the catenary masts in front of the train
+  if (trX < 9000) {
+    const x0 = Math.round(trX) - camI;
+    for (let y = 0; y < TBH; y++) { const Y = TY + y; if (Y < IMG_TOP || Y >= IMG_BOT) continue; for (let x = Math.max(0, -x0); x < TRAIN_L && x0 + x < W; x++) { const v = TRB[y * TRAIN_L + x]; if (v !== CLEAR) { FB[Y * W + x0 + x] = v; ZD[Y * W + x0 + x] = 2.4; } } }
+    drawWheels(x0, t < T_STOP || t >= T_DEP);
+    if (t >= 32.6) { const wx = x0 + (278 - STOP_X) - 4; if (wx > -10 && wx < W) { rect(wx, TY + 23, 4, 10, K1); rect(wx - 1, TY + 21, 6, 3, K1); rect(wx - 1, TY + 24, 2, 4, K1); } }   // her silhouette at a window
+    const pant = x0 + 162 + 70, moving = t < T_STOP || t >= T_DEP;                  // pantograph on the middle car, arcing on the wire
+    line(pant - 6, TY + 4, pant, TY - 5, CN2); line(pant + 6, TY + 4, pant, TY - 5, CN2); hline(pant - 4, pant + 4, TY - 5, CN1);
+    if (moving && hash(frame >> 1) > 0.9) { glow(pant + 0.5, TY - 5.5, 6, 4, LIGHT_C, 14); px(pant, TY - 5, NC0); px(pant + 1, TY - 6, WT0); px(pant - 1, TY - 4, NC0); }
+  }
+  for (let y = IMG_TOP; y < IMG_BOT; y++) { const s = y * WW + camI, d = y * W; for (let x = 0; x < W; x++) { const v = MAST[s + x]; if (v !== CLEAR) { FB[d + x] = v; ZD[d + x] = 1.6; } } }
+  // coloured pools by 2.5D distance, then halos on the sources
+  const on = signOn > 0.5 ? 1 : 0.12, ZK = 14;
+  kPool(ZD, lx + 0.5, LAMP_Y + 1, 4.4, 30, 18, LIGHT_A, 1, ZK, 1);
+  kPool(ZD, bx + 19, BOARD_Y + 7, 4.6, 22, 11, LIGHT_A, 1, ZK, 1);
+  kPool(ZD, sx + 5, SIGN_Y + 12, 4.3, 38, 26, LIGHT_M, on, ZK, 1);
+  kPool(ZD, VM_X0 + 15 - camI, VM_Y0 + 14, 4.3, 32, 24, LIGHT_C, 1, ZK, 1);
+  kPool(ZD, tx0 + 8, TUBE_Y + 2, 4.6, 32, 20, LIGHT, tubeOn, ZK, 1);
+  for (let a = 0; a < ARCH_X.length; a++) if (ARCH_LIT[a]) kPool(ZD, ARCH_X[a] - camI, 92, 5.3, 20, 10, LIGHT_A, 1, ZK, 1);
+  if (signOn > 0.5) glow(sx + 5, SIGN_Y + 12, 11, 17, LIGHT_M, 9);
+  glow(VM_X0 + 15 - camI, VM_Y0 + 14, 16, 16, LIGHT_C, 7);
+  if (tubeOn > 0.5) glow(tx0 + 8, TUBE_Y, 12, 4, LIGHT, 9);
+  glow(lx + 0.5, LAMP_Y, 5, 4, LIGHT_A, 10);
+  const hx = Math.round(trX) - camI + 2, hy = TY + 58;
+  if (trX < 9000 && hx > -2 && hx < W + 170) headlight(hx, hy);
+  // rain (backlit near the lights), the canopy's drip line, particles, foreground
+  kBacklight(0, sx + 5, SIGN_Y + 12, 16, 24, NM0, signOn > 0.5);
+  kBacklight(1, VM_X0 + 15 - camI, VM_Y0 + 14, 20, 24, NC0, true);
+  kBacklight(2, lx, LAMP_Y + 6, 12, 22, AM0, true);
+  kBacklight(3, tx0 + 8, TUBE_Y + 6, 14, 12, WT0, tubeOn > 0.5);
+  kBacklight(4, hx - 70, hy, 76, 12, WT0, trX < 9000 && hx > -2 && hx < W + 170);
+  kRainDraw(RN0, RN1, true, SHADE);
+  for (let x = CAN_X0 + 4; x <= CAN_X1; x += 9) {                     // drips off the canopy edge (periods divide the loop)
+    const X = x - camI; if (X < 0 || X >= W) continue;
+    const P = DRIP_P[(x * 7) % 8], ph = (frame + x * 13) % P, tt = ph / 60, y = 58 + Math.round(300 * tt * tt);
+    if (ph < 6) px(X, 58, RN1); else if (y < FLOOR1) { px(X, y, RN0); px(X, y - 1, RN1); } else if (y < FLOOR1 + 10) { px(X - 1, FLOOR1 - 1, RN1); px(X + 1, FLOOR1 - 1, RN1); }
+  }
+  for (let i = 0; i < PN; i++) { if (PLIFE[i] <= 0) continue; const X = Math.round(PX_[i]) - camI, Y = Math.round(PY_[i]), a = PAGE[i] / PLIFE[i]; if (PKIND[i] === 0) px(X, Y, RN0); else px(X, Y, a < 0.3 ? WT0 : a < 0.6 ? AM0 : AM1); }
+  kFgDraw(FGB, FGW, Math.round(camF * P_FG), K1, t > 23 && t < 31 ? AM2 : NM3);
+  const sgx = 301 - Math.round(camF * P_FG); if (sgx > 0 && sgx < W) { px(sgx, 104, t < 31 && t > 23 ? AM0 : NC1); glow(sgx + 0.5, 104.5, 3, 3, t < 31 && t > 23 ? LIGHT_A : LIGHT_C, 9); }
+  applyVignette(SHADE); frameBars(K0);
+}
+function bake() {
+  bakeSky(); bakeSkyline(); bakeStation(); bakeFG(); bakeTrain();
+  kRainInit(220, 150, 0.16, 120, IMG_BOT - 1);
+  buildVignette(2);
+}
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

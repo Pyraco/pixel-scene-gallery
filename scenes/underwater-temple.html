@@ -1,0 +1,2197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Underwater Temple</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+/* ==========================================================================
+   SCENE - "Underwater Temple" (generated from pixel-scene-prompt.md with the user's Section A).
+   A temple on a sunlit seabed at dawn. The camera trucks right from behind a coral bommie and reveals the temple
+   at the end of a paved processional way, then holds on it while a turtle glides past; a dithered fade closes the loop.
+   Resolved options (explicit values win over LOOK defaults; * = derived from auto or a conflict):
+     LOOK neon-noir -> every default it sets is overridden by an explicit option (dawn, top-lit, warm-mono, subtle
+       practicals, no sky). Its transferable rules are kept*: a colour table per practical with narrow-dither pools
+       (1 step: PRACTICAL_STRENGTH subtle), a 4-step ramp per light, two flat haze steps, dense attached dressing,
+       glowing glyph strokes round the doorway (its neon signs, adapted), motes and bubbles taking the colour of a
+       light they pass (its rain rule, adapted), a light bounce on the foreground's top edges.
+     OUTPUT_MODE loop · LOOP_SECONDS 20 -> 1216 frames (20.27 s, a multiple of 32)* · EXPORT png-1x -> in loop mode a
+       frame grab: "Pixel PNG 1x" (and P), plus the HD finish's PNG + one-loop WebM* · FINISH hd · OUTPUT_RES 1080 (x6)
+     SEED 1 · RESOLUTION 320x180 · FRAME full · WORLD_W 2 (12 m of lateral camera travel)* · WORLD_H 1
+     DETAIL rich · DITHER strong · PROJECTION depth · HORIZON 0.55 -> y 98.5 · CAMERA_HEIGHT auto -> raised (3 m, F 200)*
+     TRAVEL left-to-right (the camera trucks right) · ENVIRONMENT underwater · ERA contemporary (an ancient ruin)
+     SETTING an underwater temple with morning sun rays coming from above, glistening in the water and illuminating the
+       temple, surrounded by beautiful coloured corals and marine life and fish
+     SEASON autumn -> no effect underwater beyond a slightly denser marine snow* · DENSITY balanced
+     SET_PIECES auto -> the temple (3-tier plinth, 6-step stair, 6-column portico, cella with a glowing doorway,
+       pediment with a sun relief; its right corner has collapsed), 2 guardian statues, 3 column pairs along the
+       processional way, a coral bommie (the reveal's occluder) with a moray and clownfish, a giant clam, a fallen
+       column, the silhouettes of a sunken city in the haze*
+     TARGETS auto -> none* · GROUND auto -> rippled sand and a paved way of large irregular slabs drifted with sand*
+     TIME dawn · WEATHER clear (n/a underwater) · ATMOSPHERE light (golden-jade) · SKY none (the water column brightens
+       toward a shimmering surface)
+     LIGHT_STYLE top-lit · KEY sun, centre-high, not visible (dawn light bent down by the surface, still gold)*
+     PRACTICALS 2 jellyfish (purple), the temple's entrance (light blue) + its glyphs · SHAFTS subtle
+     SHADOWS contact-only · RIM auto -> gold on top edges; the colour of a practical on the side facing it*
+     VIGNETTE medium · FLICKER candle (doorway + glyphs; the jellies pulse with their bells)* · PRACTICAL_STRENGTH subtle
+     MOOD beautiful, calm, wonderful, exotic, magical · GRADE warm-mono -> gold key, warm dark-teal shadows (never navy);
+       only corals, fish and the two practicals break the monochrome* · KEY_COLOUR #f7d275* · SHADOW_COLOUR #183c38*
+     PALETTE 48 · SATURATION medium (water + stone lean muted, corals + lights saturated)* · BG_CONTRAST low
+     LAYERS auto: water column (screen) · far layers z 110 / 70 / 48 · ground plane (baked strips, offset per row)
+       · depth-sorted sprites (temple z 29.5-38, avenue, reef, bommie z 7) · foreground band (z 4.5)*
+     FOREGROUND both (near-black coral band along the bottom; kelp trailing into both top corners)
+     FOCUS foreground-soft (HD blurs the band and the corner kelp; wins over D10's far depth of field)*
+     SUBJECT_COUNT 0 -> S1 (scuba diver) and INTERACTION ignored; BEATS = camera beats
+     LOOP_CLOSE exit-reenter -> ambient (D5); the school and the turtle leave frame or are hidden by the fade*
+     HELD_BEATS on · EFFECT_1 bubbles, SOURCE auto -> set pieces: the clam (2 bursts), a crack in the stair (a trickle
+       rising through the door light), the moray's hole, two sand vents* · MOTION rise · ON_LAND none*
+     RAMP auto -> #fff8d8, #b4c792, #548a6e* · AMBIENT fish (a glinting school, reef fish, angelfish, clownfish),
+       marine snow, jellyfish, corals, marine life (turtle, moray, clam, starfish, urchins) · STATE_CHANGES none
+     SWAY strong · SHOTS reveal: hold 2.3 s -> truck right 11 s -> hold 6.5 s centred on the temple -> dithered fade
+     CAMERA_PACE slow (temple <= 11 px/s; the nearest midground ~49 px/s by parallax) · FRAMING centred
+     LEAD_ROOM on (n/a) · TRANSITIONS dithered-fade · LOOP_CAMERA return (under the fade: an eased return at slow pace
+       would take longer than the loop)* · CAMERA_SMOOTHING smooth (sine-eased, zero velocity at both ends)
+     TITLE_CARD none · DEBUG seek (#t=)
+   ========================================================================== */
+const TITLE = 'Underwater Temple';
+const W = 320, H = 180, IMG_TOP = 0, IMG_BOT = 180;            // FRAME full
+const LOOP_FRAMES = 1216;                                       // 20.27 s
+const SEED = 1, OUTPUT_MODE = 'loop', STILL_T = 0, DEBUG_KEYS = false, EXPORT_SCALES = [];   // pixel PNG button is the scene's own
+
+const PAL_HEX = [
+  '#070b0b', '#13201e',                                         // 0-1   near-blacks: fade, foreground
+  '#183c38', '#255246', '#366a58', '#548a6e', '#7ea77f', '#b4c792', '#ebe4b4', // 2-8 water: deep jade -> surface cream
+  '#fff8d8', '#f7d275',                                         // 9-10  sun: highlight, gold (rim, lit tops)
+  '#ecdca4', '#c7b881', '#979571', '#677260',                   // 11-14 sand: lit -> deep shade
+  '#f0dcc0', '#c9b196', '#8e8a78', '#52605a',                   // 15-18 temple stone: lit -> deep shade
+  '#8b916b', '#5d6d56', '#3a4b41',                              // 19-21 rock (algae-tinted)
+  '#c4ba5c', '#88913f', '#526238',                              // 22-24 kelp + algae
+  '#ffae8c', '#ea6e6e', '#a3475f',                              // 25-27 coral pink
+  '#e188c8', '#9a4b8a',                                         // 28-29 sea-fan magenta
+  '#f79a4c', '#b25c34',                                         // 30-31 orange (sponges, clownfish)
+  '#74cbab', '#3b8f7d',                                         // 32-33 teal coral
+  '#fad4c6',                                                    // 34    pale pink (tentacle tips, polyps)
+  '#f8e6ff', '#cb97f4', '#8d65c8', '#4f427c',                   // 35-38 jelly purple: core, bright, mid, dark tint
+  '#eafeff', '#96e9f7', '#50b4d3', '#2c708f',                   // 39-42 door light blue: core, bright, mid, dark tint
+  '#ad8e55', '#6e5c3b',                                         // 43-44 turtle shell
+  '#7384d8', '#414f93',                                         // 45-46 blue tang, blue polyps
+  '#fbe46a'                                                     // 47    lemon yellow (tang, tube sponges)
+];
+const K0 = 0, K1 = 1, WA0 = 2, WA1 = 3, WA2 = 4, WA3 = 5, WA4 = 6, WA5 = 7, WA6 = 8, SUN0 = 9, SUN1 = 10,
+      SD0 = 11, SD1 = 12, SD2 = 13, SD3 = 14, ST0 = 15, ST1 = 16, ST2 = 17, ST3 = 18, RK0 = 19, RK1 = 20, RK2 = 21,
+      KP0 = 22, KP1 = 23, KP2 = 24, CR0 = 25, CR1 = 26, CR2 = 27, MG0 = 28, MG1 = 29, OR0 = 30, OR1 = 31,
+      TL0 = 32, TL1 = 33, PK0 = 34, JP0 = 35, JP1 = 36, JP2 = 37, JP3 = 38, LB0 = 39, LB1 = 40, LB2 = 41, LB3 = 42,
+      TU0 = 43, TU1 = 44, BL0 = 45, BL1 = 46, YL0 = 47;
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+
+// ==========================================================================
+// KIT: NEON-NOIR (LOOK = neon-noir) - the lighting recipe from "Neon Rain", shared by scenes in that look.
+// Projection-neutral: it works on palette indices and screen-space buffers. The scene supplies its material
+// ramps (dark -> lit), a per-pixel depth buffer for light pools and a wet mask for reflections.
+// Include it after core_a (it uses makeLUT, bay, hash, FB, W, H, IMG_TOP, IMG_BOT, LOOP, gT, frame).
+// ==========================================================================
+
+// ---- colour tables built from ramps ----
+// A practical's colour: each material keeps its value but takes the light's hue (dark -> d, mid -> m, lit -> b).
+function kTint(ramps, d, m, b) {
+  const pairs = [];
+  for (let r = 0; r < ramps.length; r++) {
+    const R = ramps[r], n = R.length;
+    for (let k = 0; k < n; k++) { const f = n === 1 ? 0.5 : k / (n - 1); pairs.push(R[k], f < 0.34 ? d : f < 0.67 ? m : b); }
+  }
+  return makeLUT(pairs);
+}
+// One step along each ramp: dir +1 = LIGHT (brighter, top clamps to 'top'), -1 = SHADE (darker, bottom to 'bottom').
+function kStep(ramps, dir, top, bottom) {
+  const pairs = [];
+  for (let r = 0; r < ramps.length; r++) {
+    const R = ramps[r], n = R.length;
+    for (let k = 0; k < n; k++) { const j = k + dir; pairs.push(R[k], j < 0 ? bottom : j >= n ? (top === undefined ? R[n - 1] : top) : R[j]); }
+  }
+  return makeLUT(pairs);
+}
+// Wet reflection: lights stay coloured one step down; every other material sinks one step, its darkest to 'floor'.
+function kRefl(lightRamps, matRamps, floor) {
+  const pairs = [];
+  for (let r = 0; r < lightRamps.length; r++) { const R = lightRamps[r]; for (let k = 0; k < R.length; k++) pairs.push(R[k], R[Math.min(R.length - 1, k + 1)]); }
+  for (let r = 0; r < matRamps.length; r++) { const R = matRamps[r]; for (let k = 0; k < R.length; k++) pairs.push(R[k], k === 0 ? floor : R[k - 1]); }
+  return makeLUT(pairs);
+}
+// Toward the glowing haze: every ramp entry maps to the fog ramp entry nearest its brightness (dark -> fog[0]).
+function kFogStep(ramps, fog) {
+  const pairs = [];
+  for (let r = 0; r < ramps.length; r++) { const R = ramps[r], n = R.length; for (let k = 0; k < n; k++) pairs.push(R[k], fog[Math.min(fog.length - 1, Math.floor(k / n * fog.length + 0.5))]); }
+  return makeLUT(pairs);
+}
+// Depth fog in two flat steps with narrow dithered hand-offs; distant areas stay solid instead of turning to noise.
+function kFog2(c, z, x, y, zA, wA, zB, wB, lut) {
+  if (clamp((z - zA) / wA * 16, 0, 16) > bay(x, y)) c = lut[c];
+  if (clamp((z - zB) / wB * 16, 0, 16) > bay(x + 2, y + 1)) c = lut[c];
+  return c;
+}
+
+// ---- light pools (2.5D): screen distance plus depth difference ----
+// ZD holds the depth (world units) of whatever was drawn at each pixel; zk converts depth to px.
+// The whole pool takes the light's colour; a second step is allowed only in the core (PRACTICAL_STRENGTH medium).
+// Quantised with a narrow dither (B3 per-pixel light): wide ordered dither across a slow falloff turns to sparkle.
+function kPool(ZD, lx, ly, lz, R, str, lut, on, zk, sy) {
+  if (on <= 0) return;
+  const x0 = Math.max(0, Math.floor(lx - R)), x1 = Math.min(W - 1, Math.ceil(lx + R));
+  const y0 = Math.max(IMG_TOP, Math.floor(ly - R / sy)), y1 = Math.min(IMG_BOT - 1, Math.ceil(ly + R / sy)), R2 = R * R;
+  for (let y = y0; y <= y1; y++) {
+    const dy = (y + 0.5 - ly) * sy, dy2 = dy * dy;
+    for (let x = x0; x <= x1; x++) {
+      const i = y * W + x, dx = x + 0.5 - lx, dz = (ZD[i] - lz) * zk, d2 = dx * dx + dy2 + dz * dz;
+      if (d2 >= R2) continue;
+      const lvl = (1 - Math.sqrt(d2) / R) * str * on;
+      // narrow dither: only the middle of each step is dithered, so the wash reads as colour, not sparkle
+      if (lvl > 4.5 + bay(x, y) * 0.5) FB[i] = lut[FB[i]];
+      if (lvl - 16 > 4.5 + bay(x + 1, y + 2) * 0.5) FB[i] = lut[FB[i]];
+    }
+  }
+}
+
+// ---- wet reflections ----
+// RB: the scene draws its bright sources mirrored into RB (screen space). WET: 1 = wet floor, 2 = puddle.
+// Rows ripple sideways (a step every 8 frames) only where rowJitter is set; puddles reflect more densely.
+function kReflect(RB, WET, refl, y0, y1, jitterFrom, dens, pdens) {
+  const wob = frame >> 3;
+  for (let y = y0; y <= y1; y++) {
+    const jx = y >= jitterFrom ? ((hash(y * 73 + wob) * 3) | 0) - 1 : 0;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x, w = WET[i]; if (!w) continue;
+      const sx = x + jx; if (sx < 0 || sx >= W) continue;
+      const v = RB[y * W + sx]; if (v === CLEAR) continue;
+      if ((w === 2 ? pdens : dens) > bay(x, y)) FB[i] = refl[v];
+    }
+  }
+}
+// A light's streak down a wet floor: the classic neon smear, dithered and thinning with distance from the source.
+function kStreak(WET, x, yA, yB, c, c2, wid, dens) {
+  for (let y = yA; y <= yB; y++) {
+    const f = 1 - (y - yA) / Math.max(1, yB - yA + 1), lv = dens * f;
+    for (let k = -wid; k <= wid; k++) {
+      const X = x + k; if (X < 0 || X >= W || y < IMG_TOP || y >= IMG_BOT) continue;
+      const i = y * W + X; if (!WET[i]) continue;
+      const l = lv * (1 - Math.abs(k) / (wid + 1));
+      if (l > bay(X, y)) FB[i] = l > 11 && k === 0 ? c : c2;
+    }
+  }
+}
+
+// ---- neon signs: a baked layout (0 panel, 1 tube border, 2 glyph strokes), drawn lit or dark ----
+function kSignLayout(w, h, seed, vertical) {
+  const L = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) L[y * w + x] = (x === 0 || y === 0 || x === w - 1 || y === h - 1) ? 1 : 0;
+  const cells = vertical ? Math.max(1, Math.floor((h - 4) / (w - 1))) : Math.max(1, Math.floor((w - 4) / (h - 1)));
+  for (let g = 0; g < cells; g++) {                                   // one blocky glyph per cell: bar, stem, cross stroke, tick
+    const gx0 = vertical ? 2 : 2 + g * (h - 1), gy0 = vertical ? 2 + g * (w - 1) : 2, cw = vertical ? w - 4 : h - 3, ch = vertical ? w - 3 : h - 4;
+    for (let x = 0; x < cw; x++) L[(gy0) * w + gx0 + x] = 2;
+    const sx = gx0 + ((hash(seed + g * 17) * cw) | 0);
+    for (let y = 0; y < ch; y++) L[(gy0 + y) * w + sx] = 2;
+    const hy = gy0 + 1 + ((hash(seed + g * 29 + 5) * (ch - 2)) | 0);
+    for (let x = 0; x < cw; x++) if (hash(seed + g * 7 + x) < 0.8) L[hy * w + gx0 + x] = 2;
+    if (hash(seed + g * 3 + 1) < 0.6) L[(gy0 + ch - 1) * w + gx0] = 2;
+  }
+  return L;
+}
+function kSignDraw(L, w, h, x0, y0, on, panel, tubeOn, tubeOff, glyphOn, glyphOff) {
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = L[y * w + x]; px(x0 + x, y0 + y, v === 0 ? panel : v === 1 ? (on ? tubeOn : tubeOff) : (on ? glyphOn : glyphOff)); }
+}
+// FLICKER neon-buzz: short bursts at fixed times (sputtering every other frame), otherwise steady. Loops exactly.
+function kBurst(bursts, dur, seed) {
+  for (let b = 0; b < bursts.length; b++) if (gT >= bursts[b] && gT < bursts[b] + dur) return hash((frame >> 1) * 31 + seed) > 0.5 ? 1 : 0.1;
+  return 1;
+}
+function kBuzz(seed, p) { return hash((frame >> 2) * 7 + seed) < p ? 0.15 : 1; }   // a tube that drops out now and then
+
+// ---- brick, side-on: staggered courses, 1 px mortar, a few lighter / darker bricks, grime streaks under openings ----
+function kBrick(x, y, course, len, lit, base, dark, mortar, seed) {
+  const row = Math.floor(y / course), off = (row & 1) * (len >> 1), bx = Math.floor((x + off) / len);
+  if (y - row * course === course - 1 || (x + off) - bx * len === 0) return mortar;
+  const r = hash(row * 131 + bx * 7 + seed);
+  return r < 0.18 ? lit : r > 0.86 ? dark : base;
+}
+
+// ---- rain as a pure function of loop time (loops exactly): drops fall along slanted lines, splash where they land ----
+// Each drop wraps a whole number of times per loop; its column changes every wrap (hashed from the wrap index).
+const KR_MAX = 320, KRV = new Uint16Array(KR_MAX), KRY0 = new Float32Array(KR_MAX), KRK = new Float32Array(KR_MAX), KRF = new Int16Array(KR_MAX);
+let KR_N = 0, KR_H = 150, KR_SLANT = 0.16;
+function kRainInit(n, fallH, slant, floorY0, floorY1) {
+  KR_N = n; KR_H = fallH; KR_SLANT = slant;
+  for (let k = 0; k < n; k++) {
+    const kk = 0.25 + hash(k * 3 + 11) * 0.75;                           // near drops fall faster and streak longer
+    KRK[k] = kk; KRV[k] = Math.round((130 + 210 * kk) * LOOP / fallH);   // wraps per loop (an integer)
+    KRY0[k] = hash(k * 5 + 3) * fallH;
+    KRF[k] = floorY0 + Math.floor(hash(k * 7 + 1) * (floorY1 - floorY0));
+  }
+}
+// backlit drops: near a registered light, a drop takes that light's colour
+const KB_MAX = 12, KBX = new Float32Array(KB_MAX), KBY = new Float32Array(KB_MAX), KBRX = new Float32Array(KB_MAX), KBRY = new Float32Array(KB_MAX), KBC = new Uint8Array(KB_MAX), KBON = new Uint8Array(KB_MAX);
+let KB_N = 0;
+function kBacklight(i, x, y, rx, ry, c, on) { KBX[i] = x; KBY[i] = y; KBRX[i] = rx; KBRY[i] = ry; KBC[i] = c; KBON[i] = on ? 1 : 0; if (i >= KB_N) KB_N = i + 1; }
+function kRainDraw(rn0, rn1, splash, fade) {
+  for (let k = 0; k < KR_N; k++) {
+    const kk = KRK[k]; if (kk < 0.45 && (k & 1)) continue;             // far drops: a fixed sparse subset
+    const p = KRY0[k] + KRV[k] * KR_H * gT / LOOP, wrap = Math.floor(p / KR_H), fy = p - wrap * KR_H;
+    const x0 = hash(k * 13 + (wrap % KRV[k]) * 7) * (W + 40) - 20, fl = KRF[k], y = IMG_TOP - 6 + fy * (fl - IMG_TOP + 6) / KR_H, x = x0 + KR_SLANT * (y - IMG_TOP);
+    const L = 2 + Math.round(4 * kk);
+    if (fy > KR_H - 4 && splash) {                                      // landing: a small splash for a few frames
+      const X = Math.round(x), Y = fl; if (X > 0 && X < W - 1 && Y >= IMG_TOP && Y < IMG_BOT) { px(X - 1, Y - 1, rn1); px(X + 1, Y - 1, rn1); if (kk > 0.6) px(X, Y - 2, rn0); }
+      continue;
+    }
+    let c = kk > 0.65 ? rn0 : rn1;
+    for (let b = 0; b < KB_N; b++) { if (!KBON[b]) continue; const u = (x - KBX[b]) / KBRX[b], v = (y - KBY[b]) / KBRY[b]; if (u * u + v * v < 1) { c = KBC[b]; break; } }
+    for (let j = 0; j < L; j++) px(Math.round(x - KR_SLANT * j), Math.round(y - j), j === 0 ? c : (c === rn0 || c === rn1 ? rn1 : fade[c]));
+  }
+}
+
+// ---- foreground: near-black shapes, a dithered fringe only in concavities, a light bounce on top edges ----
+// FGB values: 1 solid, 2 fringe (checker), 3 bounce edge.
+function kFgSoften(FGB, bw, bh, bounceRows) {
+  const cnt = new Uint8Array(bw * bh);
+  for (let y = 1; y < bh - 1; y++) for (let x = 1; x < bw - 1; x++) {
+    let n = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if ((dx || dy) && FGB[(y + dy) * bw + x + dx] === 1) n++;
+    cnt[y * bw + x] = n;
+  }
+  for (let i = 0; i < bw * bh; i++) {
+    if (FGB[i] === CLEAR && cnt[i] >= 3) FGB[i] = 2;
+    else if (FGB[i] === 1 && i >= bw && FGB[i - bw] === CLEAR && Math.floor(i / bw) >= bounceRows) FGB[i] = 3;
+  }
+}
+function kFgDraw(FGB, bw, ox, dark, bounce) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const v = FGB[y * bw + x + ox]; if (v === CLEAR) continue;
+    const i = y * W + x;
+    if (v === 1) FB[i] = dark; else if (v === 2) { if ((x + y) & 1) FB[i] = dark; } else FB[i] = bay(x, y) < 8 ? bounce : dark;
+  }
+}
+
+// ==========================================================================
+// TABLES: ramps, remap tables (LIGHT / SHADE, haze, the practicals' colours), projection, camera path, noise, caustics
+// ==========================================================================
+
+// ---------- ramps (dark -> lit) ----------
+const R_WA = [WA0, WA1, WA2, WA3, WA4, WA5, WA6], R_SD = [SD3, SD2, SD1, SD0], R_ST = [ST3, ST2, ST1, ST0];
+const R_RK = [RK2, RK1, RK0], R_KP = [KP2, KP1, KP0], R_CR = [CR2, CR1, CR0], R_MG = [MG1, MG0], R_OR = [OR1, OR0];
+const R_TL = [TL1, TL0], R_TU = [TU1, TU0], R_BL = [BL1, BL0], R_JP = [JP3, JP2, JP1, JP0], R_LB = [LB3, LB2, LB1, LB0];
+const MATS = [R_WA, R_SD, R_ST, R_RK, R_KP, R_CR, R_MG, R_OR, R_TL, R_TU, R_BL, R_JP, R_LB, [SUN1, SUN0], [PK0], [YL0], [K0, K1]];
+// one step along every ramp; 'ends' overrides where a ramp runs out (LIGHT: brighter + warmer, SHADE: darker + cooler)
+function rampLUT(dir, ends) {
+  const l = makeLUT([]);
+  for (let r = 0; r < MATS.length; r++) { const R = MATS[r]; for (let k = 0; k < R.length; k++) { const j = k + dir; if (j >= 0 && j < R.length) l[R[k]] = R[j]; } }
+  for (let k = 0; k < ends.length; k += 2) l[ends[k]] = ends[k + 1];
+  return l;
+}
+const LIGHT = rampLUT(1, [WA6, SUN0, SD0, SUN0, ST0, SUN0, RK0, SD1, KP0, SUN1, CR0, PK0, MG0, PK0, OR0, SUN1, TL0, WA6,
+  TU0, SD0, BL0, WA6, SUN0, SUN0, PK0, SUN0, YL0, SUN0, K1, WA0, JP0, JP0, LB0, LB0]);
+const SHADE = rampLUT(-1, [WA0, K1, SD3, RK2, ST3, WA0, RK2, K1, KP2, RK2, CR2, MG1, MG1, JP3, OR1, TU1, TL1, WA1,
+  TU1, K1, BL1, JP3, SUN1, KP0, PK0, CR0, YL0, KP0, K0, K0, JP3, K1, LB3, WA0]);
+
+// ---------- colour science for derived tables (init only) ----------
+const PLAB = new Float32Array(NP * 3);
+function srgbLin(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+function labF(t) { return t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116; }
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16), R = srgbLin(v >> 16), G = srgbLin((v >> 8) & 255), B = srgbLin(v & 255);
+  const fx = labF((R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047), fy = labF(R * 0.2126 + G * 0.7152 + B * 0.0722), fz = labF((R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883);
+  PLAB[i * 3] = 116 * fy - 16; PLAB[i * 3 + 1] = 500 * (fx - fy); PLAB[i * 3 + 2] = 200 * (fy - fz);
+}
+function labLum(i) { return PLAB[i * 3]; }
+// one step toward a colour: mix in Lab by f, then take the nearest candidate that is not the colour itself
+function towardLUT(target, f, cands) {
+  const l = makeLUT([]), t0 = PLAB[target * 3], t1 = PLAB[target * 3 + 1], t2 = PLAB[target * 3 + 2];
+  for (let i = 0; i < NP; i++) {
+    const L = lerp(PLAB[i * 3], t0, f), A = lerp(PLAB[i * 3 + 1], t1, f), B = lerp(PLAB[i * 3 + 2], t2, f);
+    let best = target, bd = 1e9;
+    for (let k = 0; k < cands.length; k++) {
+      const c = cands[k]; if (c === i && i !== target) continue;
+      const dL = PLAB[c * 3] - L, dA = PLAB[c * 3 + 1] - A, dB = PLAB[c * 3 + 2] - B, d = dL * dL * 1.4 + dA * dA + dB * dB;
+      if (d < bd) { bd = d; best = c; }
+    }
+    l[i] = best;
+  }
+  return l;
+}
+// the haze: one step toward the water's colour (applied twice for the second step); lights keep their colour
+const FOGC = R_WA.concat(R_SD, R_ST, R_RK, R_KP, [K1]);
+const FOGL = towardLUT(WA2, 0.42, FOGC);
+for (let k = 0; k < 4; k++) { FOGL[R_JP[k]] = R_JP[k]; FOGL[R_LB[k]] = R_LB[k]; }
+FOGL[CLEAR] = CLEAR;
+// the practicals' colours (neon-noir colour tables): each material keeps its value but takes the light's hue
+const TINTR = [R_WA, R_SD, R_ST, R_RK, R_KP, R_CR, R_MG, R_OR, R_TL, R_TU, R_BL, [SUN1, SUN0], [PK0], [YL0]];
+const L_DOOR = kTint(TINTR, LB3, LB2, LB1), L_JELLY = kTint(TINTR, JP3, JP2, JP1);
+L_DOOR[K1] = LB3; L_JELLY[K1] = JP3; L_DOOR[K0] = K1; L_JELLY[K0] = K1;
+// the doorway's candle flicker and the jellies' pulse dim the light ramps by one step
+const DIM = makeLUT([LB0, LB1, LB1, LB2, LB2, LB3, JP0, JP1, JP1, JP2, JP2, JP3]);
+
+// ---------- one-point perspective, laterally trucking camera ----------
+// Camera 3 m above the seabed, looking level along +z. Screen x = VPX + (X - camX) * F / z, y = HZC + (CAMH - h) * F / z.
+const F = 200, VPX = 160, HZC = 98.5, CAMH = 3;
+const CAMX0 = -12, CAMX1 = 0;                                  // opening -> revealed
+function rowZ(y) { return CAMH * F / (y + 0.5 - HZC); }        // ground depth under row y (y >= 99)
+function scrY(h, z) { return HZC + (CAMH - h) * F / z; }
+// timeline (camera beats only): opening hold -> reveal truck -> hold on the temple -> dithered fade; the cut back to the
+// opening happens under the fade, so camera and fade are identical on both sides of the loop point
+const T_OPEN = 2.3, T_REV = 13.3, T_FADE = LOOP - 0.5, T_CUT = LOOP - 0.1;
+function camAt(t) {
+  if (t < T_OPEN || t >= T_CUT) return CAMX0;
+  if (t < T_REV) return lerp(CAMX0, CAMX1, easeSine((t - T_OPEN) / (T_REV - T_OPEN)));
+  return CAMX1;
+}
+function fadeAt(t) {                                           // 0 = clear .. 16 = black (16 Bayer levels)
+  if (t < 0.1) return 16;
+  if (t < 0.5) return 16 * (1 - (t - 0.1) / 0.4);
+  if (t < T_FADE) return 0;
+  if (t < T_CUT) return 16 * (t - T_FADE) / 0.4;
+  return 16;
+}
+
+// ---------- noise (seeded, no allocation) ----------
+function h2(x, y, s) { return hash(Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul((s + SEED * 977) | 0, 83492791)); }
+function vn(x, s) { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return lerp(h2(i, 0, s), h2(i + 1, 0, s), u); }
+function vn2(x, y, s) {
+  const i = Math.floor(x), j = Math.floor(y), f = x - i, g = y - j, u = f * f * (3 - 2 * f), v = g * g * (3 - 2 * g);
+  return lerp(lerp(h2(i, j, s), h2(i + 1, j, s), u), lerp(h2(i, j + 1, s), h2(i + 1, j + 1, s), u), v);
+}
+function fbm2(x, y, s) { return vn2(x, y, s) * 0.55 + vn2(x * 2.1, y * 2.1, s + 7) * 0.3 + vn2(x * 4.3, y * 4.3, s + 13) * 0.15; }
+// DITHER strong: transitions ~1.5x as wide (a dither band of half of each step), full speckle
+const DQ = 0.5;
+function qd(L, x, y) { let i = Math.floor(L); const f = L - i; if (f > 1 - DQ && (f - (1 - DQ)) / DQ * 16 > bay(x, y)) i++; return i; }
+
+// ---------- caustic net: a tiling cell pattern, bright where two cells meet (sampled twice with different drifts) ----------
+const CT = new Uint8Array(64 * 64);
+function bakeCaustics() {
+  const N = 8, PXa = new Float32Array(N * N), PYa = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { PXa[j * N + i] = (i + 0.2 + rnd() * 0.6) * 8; PYa[j * N + i] = (j + 0.2 + rnd() * 0.6) * 8; }
+  for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+    let f1 = 1e9, f2 = 1e9;
+    for (let k = 0; k < N * N; k++) {
+      let dx = Math.abs(x - PXa[k]), dy = Math.abs(y - PYa[k]); if (dx > 32) dx = 64 - dx; if (dy > 32) dy = 64 - dy;
+      const d = Math.sqrt(dx * dx + dy * dy); if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) f2 = d;
+    }
+    CT[y * 64 + x] = clamp(Math.round(15 - (f2 - f1) * 5), 0, 15);
+  }
+}
+// per-frame drifts (whole cycles per loop, so the net loops exactly)
+let CO1X = 0, CO1Y = 0, CO2X = 0, CO2Y = 0;
+function causticPhase() {
+  CO1X = Math.round(64 * 3 * gT / LOOP); CO1Y = Math.round(64 * 2 * gT / LOOP);
+  CO2X = Math.round(64 * 2 * gT / LOOP); CO2Y = Math.round(64 * 4 * gT / LOOP);
+}
+// caustic level (-15..15) at texel (u, v)
+function causticAt(u, v) { return CT[((v + CO1Y) & 63) << 6 | ((u + CO1X) & 63)] + CT[((v - CO2Y + 6400) & 63) << 6 | ((u - CO2X + 6417) & 63)] - 15; }
+
+// ==========================================================================
+// WATER COLUMN (screen-anchored), FAR LAYERS (z 115 / 78 / 48) and the GROUND PLANE (one baked strip per row)
+// ==========================================================================
+const BG = new Uint8Array(W * H), ZD = new Float32Array(W * H), BLC = new Uint8Array(W * H);   // colour, depth, HD blur class
+const ZWATER = 9999;
+// haze in two flat steps with narrow hand-offs (40-46 m, 62-72 m); far detail stays solid (neon-noir depth rule)
+function fogPix(c, z, x, y) { return kFog2(c, z, x, y, 40, 6, 62, 10, FOGL); }
+
+// ---------- the water column: haze at the horizon, brightening toward the surface; Snell's window over the centre ----------
+function waterLevel(x, y) {
+  const u = clamp((HZC - y) / HZC, 0, 1);
+  const dx = (x + 0.5 - VPX) / 175, dy = (y + 30) / 125, g = Math.max(0, 1 - Math.sqrt(dx * dx + dy * dy));
+  return 2.2 + 3.1 * Math.pow(u, 1.25) + 1.25 * g * g;
+}
+function bakeWater() {
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) BG[y * W + x] = y < 99 ? R_WA[clamp(qd(waterLevel(x, y), x, y), 0, 6)] : WA2;
+}
+// the underside of the surface: faint ripple cells in the top rows (they lie ~40 m out, so they parallax slowly)
+function surfaceShimmer() {
+  const off = Math.round((CAMS[0] - CAMX0) * F / 40);
+  for (let y = 0; y < 16; y++) {
+    const k = (16 - y) / 16, v = (y * 5 + (CO1Y >> 1)) & 63, v2 = (y * 3 - CO2Y + 640) & 63;
+    for (let x = 0; x < W; x++) {
+      const u = ((x + off) >> 1), l = (CT[(v << 6) | ((u + (CO1X >> 1)) & 63)] + CT[(v2 << 6) | ((u - CO2X + 999) & 63)] - 12) * k;
+      if (l > 9 + bay(x, y) * 0.45) { const i = y * W + x; FB[i] = LIGHT[FB[i]]; }
+    }
+  }
+}
+
+// ---------- far layers: one wide buffer per depth, drawn in world units, then hazed as a whole ----------
+let LZ = 50, LS = 4;                                           // the layer being drawn: depth, px per metre
+function lw(z) { return W + Math.ceil((CAMX1 - CAMX0) * F / z) + 2; }
+function wx(X) { return VPX + (X - CAMX0) * LS; }              // world X -> layer x (camera at the opening)
+function wy(h) { return HZC + (CAMH - h) * LS; }
+function wrect(X0, X1, h0, h1, c) {
+  const x0 = Math.round(wx(X0)), x1 = Math.round(wx(X1)), y0 = Math.round(wy(h1)), y1 = Math.round(wy(h0));
+  rect(x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0), c);
+}
+// a lumpy rock mass: profile height from noise, lit top edge, darker base
+function wrock(X0, X1, hMax, seed, cTop, cBody, cLow) {
+  const x0 = Math.floor(wx(X0)), x1 = Math.ceil(wx(X1)), yb = Math.round(wy(0));
+  for (let x = x0; x <= x1; x++) {
+    const u = (x - x0) / (x1 - x0), env = Math.sin(u * Math.PI), n = fbm2(x * 0.09 / LS * 4, 0.5, seed);
+    const h = hMax * Math.pow(env, 0.6) * (0.55 + 0.6 * n), top = Math.round(wy(h));
+    for (let y = top; y <= yb; y++) px(x, y, y === top ? cTop : y > yb - (yb - top) * 0.3 ? cLow : cBody);
+  }
+}
+function wpinnacle(X, hw, hMax, seed, cTop, cBody) {
+  const x0 = Math.floor(wx(X - hw)), x1 = Math.ceil(wx(X + hw)), yb = Math.round(wy(0));
+  for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - wx(X)) / (hw * LS), a = 1 - Math.abs(u); if (a <= 0) continue;
+    const h = hMax * Math.pow(a, 0.75) * (0.8 + 0.35 * vn(x * 0.35, seed)), top = Math.round(wy(h));
+    for (let y = top; y <= yb; y++) px(x, y, y - top < 2 && u < 0.3 ? cTop : cBody);
+  }
+}
+function wcolumn(X, w, h, cap, cLit, cBody, cDark) {
+  wrect(X - w / 2, X + w / 2, 0, h, cBody); wrect(X - w / 2, X - w / 6, 0, h, cLit); wrect(X + w / 3, X + w / 2, 0, h, cDark);
+  if (cap) wrect(X - w * 0.75, X + w * 0.75, h, h + w * 0.5, cLit);
+}
+const FARZ = [115, 78, 48], FARB = [], FARW = [];
+function bakeFar() {
+  for (let L = 0; L < 3; L++) {
+    LZ = FARZ[L]; LS = F / LZ; const w = lw(LZ), buf = new Uint8Array(w * H).fill(CLEAR);
+    FARB.push(buf); FARW.push(w); target(buf, w, H, 0, 0);
+    if (L === 0) {                                              // a sunken city, far out in the haze
+      wrock(-120, 120, 3.5, 3, ST1, RK1, RK2);
+      wpinnacle(-80, 8, 38, 5, RK0, RK1); wpinnacle(-60, 5, 24, 6, RK0, RK1); wpinnacle(88, 9, 34, 7, RK0, RK1);
+      for (let t = 0; t < 5; t++) wrect(-42 - 14 + t * 2.6, -42 + 14 - t * 2.6, t * 3.2, t * 3.2 + 3.2, t & 1 ? ST2 : ST1);   // ziggurat
+      wrect(-44.5, -39.5, 16, 19.5, ST1); wrect(-43, -41, 16, 18, ST3);
+      for (let k = 0; k < 5; k++) wcolumn(50 + k * 4.2, 1.5, 7 + ((k * 7) % 5), k !== 2, ST1, ST2, ST3);
+      wrect(53.4, 63.2, 11.5, 12.8, ST2);
+      wrect(66, 68.5, 0, 15, ST2); wrect(76, 78.5, 0, 15, ST2);                                    // an arch
+      for (let a = 0; a <= 40; a++) { const t = a / 40 * Math.PI, X = 72.25 - 5.8 * Math.cos(t), h = 15 + 4.2 * Math.sin(t); wrect(X - 0.8, X + 0.8, h - 1.2, h + 0.4, ST2); }
+    } else if (L === 1) {                                       // nearer ruins: a tower, an obelisk, a standing statue
+      wrock(-120, 120, 4, 13, RK0, RK1, RK2);
+      wrect(-36, -30, 0, 13, ST2); wrect(-36, -34.8, 0, 13, ST1);
+      for (let k = 0; k < 7; k++) wrect(-36 + k * 0.9, -35.4 + k * 0.9, 13, 13 + 1.5 * h2(k, 1, 31) + 0.3, ST2);   // broken top
+      for (let k = 0; k < 3; k++) wrect(-33.6, -32.6, 3 + k * 3.4, 4.8 + k * 3.4, ST3);                           // window slits
+      wrect(-24.6, -23.4, 0, 10, ST1); wrect(-23.9, -23.4, 0, 10, ST2); wrect(-24.6, -23.4, 10, 11.4, ST1);        // obelisk
+      wrock(26, 58, 13, 17, RK0, RK1, RK2);
+      wrect(38.5, 42.5, 12, 13.6, ST2); wrect(39.3, 41.7, 13.6, 21, ST2); wrect(39.9, 41.1, 21, 22.6, ST1);       // statue on the ridge
+      wrect(38.8, 39.4, 16, 20, ST2); wrect(41.6, 42.3, 16, 20.5, ST2);
+    } else {                                                    // outcrops with corals, a toppled colossal head, kelp
+      wrock(-34, -19, 7, 23, RK0, RK1, RK2); wrock(19, 33, 10, 29, RK0, RK1, RK2);
+      for (let k = 0; k < 9; k++) { const X = -33 + k * 1.6, top = wy(3.2 + 3.4 * Math.sin((k + 0.5) / 9 * Math.PI)); ellipse(wx(X), top, 2.5 + (k % 3), 1.8, k % 3 === 0 ? CR2 : k % 3 === 1 ? KP1 : MG1); }
+      for (let k = 0; k < 9; k++) { const X = 20 + k * 1.5, top = wy(4.5 + 5 * Math.sin((k + 0.5) / 9 * Math.PI)); ellipse(wx(X), top, 2.4 + (k % 2), 1.7, k % 3 === 0 ? OR1 : k % 3 === 1 ? KP1 : CR2); }
+      const hx = wx(-25.5), hy = wy(1.4);                         // the colossal head, lying on its side, half buried
+      ellipse(hx, hy, 7.5, 6.2, ST2); ellipse(hx - 1, hy - 1.5, 6, 4.5, ST1); rect(Math.round(hx) - 3, Math.round(hy) - 3, 2, 1, ST3); rect(Math.round(hx) + 1, Math.round(hy) - 3, 2, 1, ST3);
+      rect(Math.round(hx) - 1, Math.round(hy) + 1, 3, 1, ST3);
+      for (let f = 0; f < 5; f++) { const bx = wx(26 + f * 0.9), by = wy(9.4 + Math.sin(f) * 0.6); for (let j = 0; j < 9 + f; j++) px(Math.round(bx + (j >> 1) - 2), Math.round(by - j), MG1); }
+      for (let k = 0; k < 3; k++) { const bx = Math.round(wx([-17, 17.5, 35][k])), by = Math.round(wy(0)); for (let j = 0; j < 26 + k * 6; j++) px(bx + Math.round(1.5 * Math.sin(j * 0.2 + k)), by - j, KP2); }
+    }
+    // haze: the whole layer in one go (FAR 1: three steps, 2: two, 3: one)
+    for (let i = 0; i < w * H; i++) { let c = buf[i]; if (c === CLEAR) continue; for (let s = 0; s < 3 - L; s++) c = FOGL[c]; buf[i] = c; }
+  }
+}
+function drawFar(L) {
+  const w = FARW[L], buf = FARB[L], z = FARZ[L], o = Math.round((CAMS[0] - CAMX0) * F / z);
+  for (let y = 40; y < 115; y++) {
+    const s = y * w + o, d = y * W;
+    for (let x = 0; x < W; x++) { const v = buf[s + x]; if (v !== CLEAR) { FB[d + x] = v; ZD[d + x] = z; BLC[d + x] = 2; } }
+  }
+}
+
+// ---------- the ground plane: rows 99..179, each a strip baked in world coordinates, blitted with its own offset ----------
+const GY0 = 99, GZ = new Float32Array(H), GMPP = new Float32Array(H), GOFF = new Int32Array(H + 1);
+let GBUF = null, GFL = null;                                     // strip colours; flags: 1 = takes caustics
+const PAVE_HW = 6.8, PAVE_Z1 = 29.5;                             // the processional way (up to the foot of the stair)
+// is there a slab joint inside [a, b) for slabs of length len (with offset o)?
+function jointIn(a, b, len, o) { return Math.floor((b + o) / len) !== Math.floor((a + o) / len); }
+function groundTex(X, Z, x, y, zA, zB, mpp) {
+  // sand: megaripples running across the view (fading out with distance), mottled; DITHER strong keeps full speckle
+  let c = SD1;
+  const nz = fbm2(X * 0.45, Z * 0.45, 41);
+  if (Z < 13) {
+    const rip = Math.sin(Z * 5.2 + 1.3 * Math.sin(X * 0.41 + Z * 0.3) + 2.2 * nz), fade = clamp((13 - Z) / 4, 0, 1);
+    if (rip > 1 - 0.34 * fade) c = SD0; else if (rip < -1 + 0.3 * fade) c = SD2;
+  }
+  if (nz > 0.62 && bay(x, y) < (nz - 0.62) * 60) c = SD2;
+  if (nz < 0.3 && bay(x + 1, y) < (0.3 - nz) * 40) c = SD0;
+  // the paved way: large irregular slabs with joints, drifted over with sand at the edges and in patches
+  if (Math.abs(X) < PAVE_HW + 0.4 && Z < PAVE_Z1 + 0.3) {
+    const wv = 0.3 * Math.sin(X * 0.9), row = Math.floor((Z + wv) / 1.25), off = h2(row, 0, 21) * 1.6, wz = 0.25 * Math.sin(Z * 1.3 + row);
+    const col = Math.floor((X + off + wz) / 1.6), tone = h2(row, col, 23);
+    let s = tone < 0.18 ? ST2 : tone > 0.85 ? SD0 : ST1;
+    if (zB - zA < 0.55 && jointIn(zA + wv, zB + wv, 1.25, 0)) s = Z < 16 ? ST3 : ST2;                    // joint between slab rows
+    if (mpp < 1.0 && jointIn(X - mpp / 2 + wz, X + mpp / 2 + wz, 1.6, off)) s = Z < 16 ? ST3 : ST2;      // joint across a row
+    if (tone > 0.35 && tone < 0.4 && Z < 20 && bay(x, y) < 5) s = KP2;                                  // algae
+    if (h2(Math.floor(X * 6), Math.floor(Z * 3), 25) < 0.02 && Z < 18) s = ST3;                         // chips and pits
+    const drift = nz * 1.25 + Math.max(0, Math.abs(X) - PAVE_HW + 1.1) * 0.8 + (Z > PAVE_Z1 - 0.8 ? 0.2 : 0);
+    if (drift < 0.8 || (drift < 0.92 && (drift - 0.8) * 130 < bay(x, y))) c = s;
+  }
+  // shells, pebbles, coral rubble (flat decals only: anything with height is a sprite)
+  const hs = h2(Math.floor(X * 5), Math.floor(Z * 5), 27);
+  if (Z < 18 && hs < 0.012) c = hs < 0.004 ? PK0 : hs < 0.008 ? ST0 : RK1;
+  return c;
+}
+function bakeGround() {
+  let n = 0;
+  for (let y = GY0; y < H; y++) { GZ[y] = rowZ(y); GMPP[y] = GZ[y] / F; GOFF[y] = n; n += W + Math.ceil((CAMX1 - CAMX0) / GMPP[y]) + 2; }
+  GOFF[H] = n; GBUF = new Uint8Array(n); GFL = new Uint8Array(n);
+  for (let y = GY0; y < H; y++) {
+    const z = GZ[y], mpp = GMPP[y], zA = CAMH * F / (y + 1 - HZC), zB = CAMH * F / (y - HZC), w = GOFF[y + 1] - GOFF[y];
+    for (let sx = 0; sx < w; sx++) {
+      const X = CAMX0 + (sx + 0.5 - VPX) * mpp, i = GOFF[y] + sx;
+      let c = z > 150 ? WA2 : groundTex(X, z, sx, y, zA, zB, mpp);
+      if (z < 150) c = fogPix(c, z, sx, y);
+      GBUF[i] = c; GFL[i] = z < 22 ? 1 : 0;
+    }
+  }
+}
+// contact shadows (top-lit, SHADOWS contact-only): a soft dark oval hugging each base, baked once
+function groundShadow(X, Z, hw, hd, str) {
+  for (let y = GY0; y < H; y++) {
+    const z = GZ[y]; if (Math.abs(z - Z) > hd) continue;
+    const mpp = GMPP[y], dz = (z - Z) / hd, x0 = Math.floor((X - hw - CAMX0) / mpp + VPX), x1 = Math.ceil((X + hw - CAMX0) / mpp + VPX), o = GOFF[y], w = GOFF[y + 1] - o;
+    for (let sx = Math.max(0, x0); sx <= Math.min(w - 1, x1); sx++) {
+      const Xs = CAMX0 + (sx + 0.5 - VPX) * mpp, dx = (Xs - X) / hw, d = dx * dx + dz * dz; if (d >= 1) continue;
+      const l = (1 - d) * str; const i = o + sx;
+      if (l > bay(sx, y) * 0.06) { GBUF[i] = SHADE[GBUF[i]]; GFL[i] = 0; }
+      if (l > 1.25 + bay(sx + 2, y) * 0.05) GBUF[i] = SHADE[GBUF[i]];
+    }
+  }
+}
+function drawGround() {
+  const cam = CAMS[0];
+  for (let y = GY0; y < H; y++) {
+    const o = GOFF[y] + Math.round((cam - CAMX0) / GMPP[y]), d = y * W, z = GZ[y];
+    for (let x = 0; x < W; x++) { FB[d + x] = GBUF[o + x]; ZD[d + x] = z; BLC[d + x] = 0; }
+  }
+}
+// caustics on the seabed, sampled in world coordinates (squashed by the perspective), fading out by 22 m
+const CU = 13, CV = 6;
+function groundCaustics() {
+  const cam = CAMS[0];
+  for (let y = GY0; y < H; y++) {
+    const z = GZ[y]; if (z >= 22) continue;
+    const fz = z < 14 ? 1 : (22 - z) / 8, mpp = GMPP[y], so = Math.round((cam - CAMX0) / mpp), o = GOFF[y] + so, v = Math.floor(z * CV), d = y * W;
+    for (let x = 0; x < W; x++) {
+      if (!GFL[o + x]) continue;
+      const X = CAMX0 + (x + so + 0.5 - VPX) * mpp, l = causticAt(Math.floor(X * CU), v) * 2 * fz;
+      if (l > bay(x, y)) { const i = d + x; FB[i] = LIGHT[FB[i]]; }
+    }
+  }
+}
+
+// ==========================================================================
+// SPRITES (every standing object baked once at its exact scale: the camera trucks sideways and never changes depth),
+// the material shader for set dressing, and THE TEMPLE, its guardians and the processional way's columns
+// ==========================================================================
+const SMAX = 220;
+const SPX = new Float32Array(SMAX), SPZ = new Float32Array(SMAX), SPAX = new Float32Array(SMAX), SPY0 = new Int16Array(SMAX);
+const SPW = new Int16Array(SMAX), SPH = new Int16Array(SMAX), SPA = new Float32Array(SMAX), SPK = new Uint8Array(SMAX);
+const SPP = new Float32Array(SMAX), SPR = new Int16Array(SMAX), SPBL = new Uint8Array(SMAX), SPORD = new Uint8Array(SMAX);
+const SPB = [], SPU = [];
+let SN = 0, CS = 0, CSS = 1;
+// a sprite covering the world box [X0, X1] x [h0, h1] at depth Z, anchored at world X; m = margin in px
+function newSprite(X, Z, X0, X1, h0, h1, m) {
+  const i = SN++, s = F / Z, top = Math.round(scrY(h1, Z)) - m, bot = Math.round(scrY(h0, Z)) + m;
+  SPX[i] = X; SPZ[i] = Z; SPY0[i] = top; SPW[i] = Math.ceil((X1 - X0) * s) + 2 * m; SPH[i] = bot - top; SPAX[i] = (X - X0) * s + m;
+  SPB.push(new Uint8Array(SPW[i] * SPH[i]).fill(CLEAR)); SPU.push(new Uint8Array(SPW[i] * SPH[i]));
+  sBegin(i); return i;
+}
+function sBegin(i) { CS = i; CSS = F / SPZ[i]; target(SPB[i], SPW[i], SPH[i], 0, 0); }
+function lx(X) { return SPAX[CS] + (X - SPX[CS]) * CSS; }       // world X -> sprite x (continuous)
+function ly(h) { return scrY(h, SPZ[CS]) - SPY0[CS]; }           // world height -> sprite y (continuous)
+function rx(X) { return Math.round(lx(X)); }
+function ry(h) { return Math.round(ly(h)); }
+function wX(x) { return SPX[CS] + (x + 0.5 - SPAX[CS]) / CSS; }  // sprite pixel -> world X
+function wH(y) { return CAMH - (y + 0.5 + SPY0[CS] - HZC) / CSS; }
+function upAt(x, y) { if (x >= 0 && y >= 0 && x < SPW[CS] && y < SPH[CS]) SPU[CS][y * SPW[CS] + x] = 1; }
+function gAt(x, y) { return (x >= 0 && y >= 0 && x < SPW[CS] && y < SPH[CS]) ? SPB[CS][y * SPW[CS] + x] : CLEAR; }
+function setSway(i, amp, k, ph, pivot) { SPA[i] = amp; SPK[i] = k; SPP[i] = ph; SPR[i] = pivot; }
+// top edges catch the sun (top-lit rim) and take caustics
+function sunEdges(i, rimC) {
+  sBegin(i); const w = SPW[i], h = SPH[i], b = SPB[i];
+  for (let y = 1; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = b[y * w + x]; if (v === CLEAR || b[(y - 1) * w + x] !== CLEAR) continue;
+    if (rimC !== CLEAR && v !== K1 && v !== K0) b[y * w + x] = rimC === 1 ? LIGHT[v] : rimC;
+    SPU[i][y * w + x] = 1;
+  }
+}
+// contact shadows, applied to the ground strips after they are baked
+const SHD = [];
+function contact(X, Z, hw, hd, str) { SHD.push(X, Z, hw, hd, str); }
+
+// ---------- material shader (set dressing): codes 1..14 in the sprite, lit from above into ramps ----------
+// levels: 0 deep, 1 shade, 2 base, 3 lit, 4 top edge (+ caustics). Flags: 16 groove (-1), 32 highlight (+1), 64 keep as-is.
+const M_ROCK = 1, M_BRAIN = 2, M_PINK = 3, M_MAG = 4, M_ORNG = 5, M_TEAL = 6, M_ALG = 7, M_STONE = 8, M_SAND = 9,
+      M_YEL = 10, M_BLUE = 11, M_PALE = 12, M_HOLE = 13, M_BROWN = 14, G_ = 16, HI_ = 32;
+const MR = new Uint8Array([
+  0, 0, 0, 0, 0,
+  RK2, RK2, RK1, RK0, RK0,        // 1 rock
+  KP2, KP1, KP0, SUN1, SUN1,      // 2 brain coral (ochre)
+  CR2, CR2, CR1, CR0, PK0,        // 3 coral pink
+  MG1, MG1, MG1, MG0, PK0,        // 4 sea-fan magenta
+  OR1, OR1, OR0, OR0, SUN1,       // 5 orange
+  TL1, TL1, TL1, TL0, WA6,        // 6 teal
+  RK2, KP2, KP1, KP0, KP0,        // 7 algae / kelp
+  ST3, ST2, ST2, ST1, ST0,        // 8 stone
+  SD3, SD2, SD1, SD1, SD0,        // 9 sand
+  KP0, SUN1, YL0, YL0, SUN0,      // 10 yellow
+  JP3, BL1, BL0, BL0, WA6,        // 11 blue
+  CR1, CR0, PK0, PK0, SUN0,       // 12 pale pink
+  K1, K1, K1, RK2, RK2,           // 13 hole
+  TU1, TU1, TU0, TU0, SD0         // 14 brown
+]);
+function shadeSprite(i, litBand, deepD, aoRows) {
+  sBegin(i); const w = SPW[i], h = SPH[i], b = SPB[i], U = SPU[i], out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const k = y * w + x, v = b[k]; if (v === CLEAR) { out[k] = CLEAR; continue; }
+    if (v & 64) { out[k] = v & 63; continue; }
+    const m = v & 15;
+    let d = 0; while (d <= deepD && y - d - 1 >= 0 && b[k - (d + 1) * w] !== CLEAR) d++;
+    let dn = 0; while (dn < 3 && y + dn + 1 < h && b[k + (dn + 1) * w] !== CLEAR) dn++;
+    const side = (x > 0 && b[k - 1] === CLEAR) || (x < w - 1 && b[k + 1] === CLEAR);
+    let L = d === 0 ? 4 : d <= 1 ? 3 : d <= litBand ? (d > litBand * 0.6 && bay(x, y) < 6 ? 2 : 3) : d <= deepD ? 2 : 1;
+    if (d > 1 && dn === 0 && y + 1 < h) L = Math.min(L, 1);                        // undersides fall into shade
+    else if (d > 2 && dn <= 1 && bay(x, y) < 8) L = Math.min(L, 2);
+    if (side && d > litBand && bay(x + 1, y) < 5) L--;
+    if (y >= h - aoRows) L--;                                                      // ambient occlusion at the base
+    if (v & G_) L--; if (v & HI_) L++;
+    out[k] = MR[m * 5 + clamp(L, 0, 4)];
+    if (d === 0) U[k] = 1;
+  }
+  b.set(out);
+}
+
+// ---------- stone helpers ----------
+// fluted column shaft between heights hA..hB, radius tapering rBot -> rTop, lit from above-front
+function shaft(Xc, hA, hB, rBot, rTop, seed, weather) {
+  const yA = ry(hA), yB = ry(hB), wpx = rBot * 2 * CSS, fs = Math.max(2, Math.round(wpx / 8));
+  for (let y = yB; y < yA; y++) {
+    const hh = wH(y), t = clamp((hh - hA) / (hB - hA), 0, 1), r = lerp(rBot, rTop, t), x0 = rx(Xc - r), x1 = rx(Xc + r), cx = lx(Xc);
+    for (let x = x0; x < x1; x++) {
+      const n = (x + 0.5 - cx) / (r * CSS);
+      let L = 1.0 + 1.05 * Math.sqrt(Math.max(0, 1 - n * n)) + 0.6 * t;
+      if (((x - x0) % fs) === fs - 1 && Math.abs(n) < 0.8 && x1 - x0 > 5) L -= 0.55;
+      if (n > 0.72) L -= 0.5; if (n < -0.85) L -= 0.3;
+      if (weather) {
+        const g = h2(x, y, seed);
+        if (g < 0.02) L -= 1;                                                        // pits
+        if (vn2(x * 0.3, y * 0.18, seed + 3) > 0.72 - (1 - t) * 0.2 && bay(x, y) < 9) { px(x, y, L > 1.8 ? KP1 : KP2); continue; }   // algae
+      }
+      px(x, y, R_ST[clamp(qd(L, x, y), 0, 3)]);
+    }
+  }
+}
+// a coursed stone face (front-facing) for the plinth and the cella: courses of ch metres, blocks bl..bl*1.6 long
+function coursed(X0, X1, h0, h1, ch, bl, seed, dark, fn) {
+  for (let y = ry(h1); y < ry(h0); y++) {
+    const hh = wH(y), cr = Math.floor((h1 - hh) / ch), fr = (h1 - hh) / ch - cr, line = fr * ch * CSS < 1;   // 1-px mortar under each course
+    for (let x = rx(X0); x < rx(X1); x++) {
+      const X = wX(x), off = h2(cr, 0, seed) * bl, bi = Math.floor((X + off) / (bl * (1 + 0.6 * h2(cr, 5, seed)))), tone = h2(cr, bi, seed + 1);
+      const jl = (X + off) / (bl * (1 + 0.6 * h2(cr, 5, seed))) - bi, joint = jl * bl * CSS < 1;
+      let c = line || joint ? ST2 : tone < 0.1 ? ST2 : tone > 0.9 ? ST0 : ST1;
+      if (dark) c = SHADE[c];
+      if (!line && !joint && fr * ch * CSS < 2 && c !== ST3) c = LIGHT[c];                  // each course's top arris catches light
+      c = fn ? fn(c, x, y, X, hh) : c;
+      px(x, y, c);
+    }
+  }
+}
+
+// ---------- the temple ----------
+const TCOLX = [-10.2, -6.4, -2.6, 2.6, 6.4, 10.2], TZC = 34.6, TZW = 38;
+let DOOR_I = 0, DOOR_X0 = 0, DOOR_X1 = 0, DOOR_Y0 = 0, DOOR_Y1 = 0;   // the cella sprite and the doorway's rect in it
+function brokeRight(X, h) { return h > 8.85 && X > 8.05 + 0.45 * Math.sin(h * 3.1) + 0.35 * vn(h * 2, 51) - (h - 9) * 0.12; }
+// a plinth tier: its front face plus the sliver of tread that shows below eye level
+function tier(Z, zBack, hw, h0, h1, seed) {
+  const i = newSprite(0, Z, -hw - 0.2, hw + 0.2, h0, h1, 2), yT = Math.round(scrY(h1, zBack)) - SPY0[i], yF = ry(h1);
+  for (let y = yT; y < yF; y++) for (let x = rx(-hw); x < rx(hw); x++) { px(x, y, ST0); upAt(x, y); }
+  coursed(-hw, hw, h0, h1, 0.5, 1.7, seed, false, (c, x, y, X, hh) => {
+    if (hh < h0 + 0.35 && bay(x, y) < 10) c = SHADE[c];                                    // darker toward its foot
+    if (hh > h1 - 0.3 && vn2(x * 0.5, 1, seed + 9) > 0.62 && bay(x, y) < 7) c = KP2;       // algae drips below the tread
+    return c;
+  });
+  // weathering: a chipped end and a few cracks
+  const xl = rx(-hw), yb = ry(h0);
+  for (let y = yT; y < yb; y++) { const n = Math.floor(2.5 * vn(y * 0.4, seed + 2)); for (let x = xl; x < xl + n; x++) px(x, y, CLEAR); }
+  for (let k = 0; k < 3; k++) { let x = rx(-hw + 3 + h2(k, 1, seed) * (2 * hw - 6)), y = yF + 1; for (let j = 0; j < (yb - yF) - 1; j++) { px(x, y + j, ST3); if (h2(j, k, seed) < 0.4) x++; } }
+  if (h0 === 0) for (let x = rx(-hw); x < rx(hw); x++) { const s = Math.round(1.6 + 1.4 * vn(x * 0.08, seed + 5)); for (let j = 0; j < s; j++) px(x, yb - 1 - j, j === s - 1 ? SD0 : SD1); }   // sand drifted against the foot
+  return i;
+}
+function stair(k) {
+  const z = 29.5 + 0.75 * k, zB = z + 0.75, h0 = 0.5 * k, h1 = 0.5 * (k + 1), hw = 3.5;
+  const i = newSprite(0, z, -hw - 0.2, hw + 0.2, h0, h1, 2), yT = Math.round(scrY(h1, zB)) - SPY0[i], yF = ry(h1), yb = ry(h0);
+  for (let y = yT; y < yF; y++) for (let x = rx(-hw); x < rx(hw); x++) { px(x, y, (h2(x, k, 61) < 0.08) ? ST1 : ST0); upAt(x, y); }
+  for (let y = yF; y < yb; y++) for (let x = rx(-hw); x < rx(hw); x++) {
+    const X = wX(x), seam = Math.abs(((X + 3.5 + k * 0.6) % 2.2)) * CSS < 1;
+    let c = y === yF ? ST0 : seam ? ST3 : (h2(x, y, 62 + k) < 0.12 ? ST2 : ST1);
+    if (y === yb - 1) c = ST2;
+    px(x, y, c);
+  }
+  for (let x = rx(-hw); x < rx(-hw) + 1 + (k & 1); x++) for (let y = yT; y < yb; y++) px(x, y, CLEAR);   // worn corners
+  if (k === 1) { px(rx(1.2), yF, ST3); px(rx(1.2) + 1, yF + 1, ST3); }                              // the crack the bubbles leak from
+  contact(0, z - 0.1, hw + 0.2, 0.45, 1.1);
+}
+function bakeTemple() {
+  tier(32, 33, 13, 0, 1, 70); tier(33, 34, 12, 1, 2, 71); tier(34, 34, 11, 2, 3, 72);
+  contact(0, 31.6, 13.6, 1.1, 1.6);
+  // ---- the cella wall behind the portico (in the portico's shade), the ceiling band, the doorway ----
+  const c = DOOR_I = newSprite(0, TZW, -11.2, 11.2, 3, 9.5, 2);
+  const yC = Math.round(scrY(9, TZC)) - SPY0[c], yW = ry(9);
+  for (let y = yC; y < yW; y++) for (let x = rx(-11.2); x < rx(11.2); x++) px(x, y, ((x + (y - yC) * 3) % 7 === 0 || y === yW - 1) ? K1 : ST3);   // coffered ceiling
+  coursed(-11.2, 11.2, 3, 9, 0.6, 1.5, 73, true, (c2, x, y, X, hh) => (hh < 3.9 && bay(x, y) < 9 ? SHADE[c2] : c2));
+  // door frame: jambs + lintel carved with glyph strokes that glow (the look's neon signs, adapted)
+  const dX = 1.8, jw = 0.55, dH = 7.6, lH = 8.25;
+  for (let y = ry(lH); y < ry(3); y++) for (let x = rx(-dX - jw); x < rx(dX + jw); x++) px(x, y, ST2);
+  for (let y = ry(lH); y < ry(dH); y++) for (let x = rx(-dX - jw); x < rx(dX + jw); x++) px(x, y, y === ry(lH) ? ST1 : ST2);
+  const gh = ry(3) - ry(dH) - 2, gw = rx(dX + jw) - rx(-dX - jw) - 4;
+  const GL = kSignLayout(3, gh, 811, true), GR = kSignLayout(3, gh, 823, true), GT = kSignLayout(gw, 3, 837, false);
+  kSignDraw(GL, 3, gh, rx(-dX - jw), ry(dH) + 1, true, ST3, ST2, ST2, LB1, ST3);           // carved frame, glowing strokes
+  kSignDraw(GR, 3, gh, rx(dX + jw) - 3, ry(dH) + 1, true, ST3, ST2, ST2, LB1, ST3);
+  kSignDraw(GT, gw, 3, rx(-dX - jw) + 2, ry(lH) + 1, true, ST2, ST1, ST1, LB1, ST2);
+  // the doorway: a light-blue glow from within, the corridor walls converging, an altar with its orb
+  DOOR_X0 = rx(-dX); DOOR_X1 = rx(dX); DOOR_Y0 = ry(dH); DOOR_Y1 = ry(3);
+  const dcx = (DOOR_X0 + DOOR_X1) / 2, dcy = ry(4.6), dw = DOOR_X1 - DOOR_X0, dh = DOOR_Y1 - DOOR_Y0;
+  for (let y = DOOR_Y0; y < DOOR_Y1; y++) for (let x = DOOR_X0; x < DOOR_X1; x++) {
+    const u = (x + 0.5 - dcx) / (dw * 0.5), v = (y + 0.5 - dcy) / (dh * 0.62), r = Math.sqrt(u * u + v * v);
+    const inner = Math.abs(u) < 0.62 - (y - DOOR_Y0) / dh * 0.1 && y > DOOR_Y0 + dh * 0.12;            // the far opening of the corridor
+    let L = inner ? 3.2 - r * 1.3 : 1.6 - r * 0.8;
+    if (!inner && Math.abs(u) > 0.9) L -= 0.6;
+    px(x, y, R_LB[clamp(qd(L, x, y), 0, 3)]);
+  }
+  for (let y = DOOR_Y0; y < DOOR_Y1; y++) { px(DOOR_X0, y, LB3); px(DOOR_X1 - 1, y, LB3); }
+  const ax0 = Math.round(dcx - dw * 0.18), ax1 = Math.round(dcx + dw * 0.18), ay0 = ry(3.95);
+  for (let y = ay0; y < DOOR_Y1; y++) for (let x = ax0; x < ax1; x++) px(x, y, y === ay0 ? LB2 : LB3);      // altar, back-lit
+  ellipse(dcx, ay0 - 1.6, 1.8, 1.8, LB0); px(Math.round(dcx), ay0 - 1, LB1);
+  // ---- the portico: six columns, the entablature, the pediment with its sun relief ----
+  const p = newSprite(0, TZC, -11.8, 11.8, 3, 13.7, 2);
+  for (let k = 0; k < 6; k++) {
+    const X = TCOLX[k], broken = k === 5, top = broken ? 6.4 : 8.45;
+    for (let y = ry(3.36); y < ry(3); y++) for (let x = rx(X - 0.76); x < rx(X + 0.76); x++) px(x, y, y === ry(3) - 1 ? ST2 : ST1);   // base
+    for (let x = rx(X - 0.68); x < rx(X + 0.68); x++) px(x, ry(3.36), ST0);
+    shaft(X, 3.36, top, 0.56, 0.48, 80 + k, false);
+    if (!broken) {
+      for (let y = ry(8.75); y < ry(8.45); y++) { const t = (y - ry(8.75)) / Math.max(1, ry(8.45) - ry(8.75)), hw = lerp(0.72, 0.52, t); for (let x = rx(X - hw); x < rx(X + hw); x++) px(x, y, ST2); }   // echinus (in the abacus' shade)
+      for (let y = ry(9.0); y < ry(8.75); y++) for (let x = rx(X - 0.78); x < rx(X + 0.78); x++) px(x, y, y === ry(9.0) ? ST0 : ST1);                                              // abacus
+    }
+  }
+  // entablature: architrave (fasciae), frieze (triglyphs + metopes), cornice with its drip shadow
+  for (let y = ry(9.7); y < ry(9.0); y++) for (let x = rx(-11); x < rx(11); x++) px(x, y, y === ry(9.7) ? ST0 : y === ry(9.0) - 1 ? ST2 : ST1);
+  for (let y = ry(10.3); y < ry(9.7); y++) for (let x = rx(-11); x < rx(11); x++) {
+    const X = wX(x), tg = ((X + 11) % 1.9 + 1.9) % 1.9, inT = tg < 0.62;
+    px(x, y, inT ? (Math.floor(tg / 0.62 * 4) & 1 ? ST3 : ST2) : (y === ry(10.3) + 1 && Math.abs(tg - 1.26) * CSS < 1 ? ST0 : ST1));
+  }
+  for (let x = rx(-11); x < rx(11); x++) px(x, ry(10.3), ST3);
+  for (let y = ry(10.66); y < ry(10.3); y++) for (let x = rx(-11.35); x < rx(11.35); x++) px(x, y, y === ry(10.66) ? ST0 : ST1);
+  // pediment: tympanum in shade, raking cornices, the sun relief, an acroterion at the apex
+  const pb = 10.66, pa = 13.4, phw = 11.35;
+  for (let y = ry(pa); y < ry(pb); y++) {
+    const hh = wH(y), hwAt = phw * (pa - hh) / (pa - pb);
+    for (let x = rx(-hwAt); x < rx(hwAt); x++) {
+      const X = wX(x), e = hwAt - Math.abs(X);
+      px(x, y, e * CSS < 1.2 ? ST0 : e * CSS < 2.6 ? ST1 : e * CSS < 3.4 ? ST3 : ST2);
+    }
+  }
+  const scx = lx(0), scy = ly(11.75), sr = 0.95 * CSS;
+  for (let a = 0; a < 12; a++) { const an = a / 12 * TAU; line(scx + Math.cos(an) * (sr + 1), scy + Math.sin(an) * (sr + 1) * 0.9, scx + Math.cos(an) * (sr + 3.2), scy + Math.sin(an) * (sr + 3.2) * 0.9, a < 6 ? ST1 : ST0); }
+  ellipse(scx, scy, sr + 0.6, sr + 0.4, ST3); ellipse(scx, scy, sr, sr * 0.92, ST1); ellipse(scx - 0.5, scy - 0.7, sr * 0.55, sr * 0.5, ST0);
+  px(Math.round(scx), ry(pa) - 1, ST0); px(Math.round(scx) - 1, ry(pa), ST1); px(Math.round(scx) + 1, ry(pa), ST1);
+  // the collapsed right corner: the outer column is broken, the entablature and the pediment's corner have fallen
+  for (let y = 0; y < SPH[p]; y++) for (let x = 0; x < SPW[p]; x++) if (brokeRight(wX(x), wH(y))) px(x, y, CLEAR);
+  for (let x = rx(9.62); x < rx(10.78); x++) { const j = Math.round(1.5 * vn(x * 0.9, 57)); for (let y = ry(6.4) - 1; y < ry(6.4) + j; y++) px(x, y, CLEAR); }
+  sunEdges(p, 1);
+  // debris: drums on the upper tier, a capital and drums on the sand, an entablature block on the far left
+  drum(8.4, 34.3, 3, 0.52, 0.8, true); drum(14.4, 31.2, 0, 0.55, 1.5, false); drum(16.2, 29.4, 0, 0.5, 1.2, false);
+  block(-15.8, 27.2, 0, 2.2, 0.8, 90); block(14.3, 32.8, 0, 1.6, 0.9, 91);
+  // the guardians: seated lions on pedestals, flanking the stair, facing down the processional way
+  lion(-5.4, 30.2, false); lion(5.4, 30.2, true);
+}
+function drum(X, Z, h0, r, len, onEdge) {
+  const i = newSprite(X, Z, X - len / 2 - 0.2, X + len / 2 + 0.2, h0, h0 + 2 * r, 2);
+  for (let y = ry(h0 + 2 * r); y < ry(h0); y++) {
+    const v = (wH(y) - h0 - r) / r;
+    for (let x = rx(X - len / 2); x < rx(X + len / 2); x++) { const L = 1.2 + 1.6 * clamp(v + 0.3, 0, 1) - ((x & 1) && Math.abs(v) < 0.8 ? 0.35 : 0); px(x, y, R_ST[clamp(qd(L, x, y), 0, 3)]); }
+  }
+  sunEdges(i, 1); contact(X, Z, len / 2 + 0.3, 0.6, 1.2);
+  if (!onEdge) { for (let x = rx(X - len / 2); x < rx(X + len / 2); x++) { const s = Math.round(1 + 1.5 * vn(x * 0.3, 93)); for (let j = 0; j < s; j++) px(x, ry(h0) - 1 - j, j === s - 1 ? SD0 : SD1); } }
+}
+function block(X, Z, h0, len, hgt, seed) {
+  const i = newSprite(X, Z, X - len / 2 - 0.2, X + len / 2 + 0.2, h0, h0 + hgt, 2);
+  coursed(X - len / 2, X + len / 2, h0, h0 + hgt, hgt, len, seed, false, (c, x, y, Xw, hh) => (hh > h0 + hgt * 0.55 && ((Xw * 5) % 1 < 0.3) ? ST2 : c));
+  for (let x = rx(X - len / 2); x < rx(X + len / 2); x++) { const s = Math.round(1 + 1.8 * vn(x * 0.25, seed)); for (let j = 0; j < s; j++) px(x, ry(h0) - 1 - j, j === s - 1 ? SD0 : SD1); }
+  sunEdges(i, 1); contact(X, Z, len / 2 + 0.3, 0.7, 1.2);
+}
+// M mane, F face (lit), E eye, N nose, B body, S shade, D deep, H highlight (paws, top of the head)
+const LION = [
+  '..H...H..',
+  '.MMMHMMM.',
+  'MMMFFFMMM',
+  'MMFEFEFMM',
+  'MMFFNFFMM',
+  '.MMFFFMM.',
+  '..MMMMM..',
+  '...BHB...',
+  '..SBBBS..',
+  '.SBDBDBS.',
+  'SSBDBDBSS',
+  'SBBDBDBBS',
+  'SHHDHHDHS'
+];
+function lion(X, Z, flip) {
+  const i = newSprite(X, Z, X - 1.1, X + 1.1, 0, 3.9, 2), f = flip ? -1 : 1;
+  // pedestal with a moulding
+  for (let y = ry(1.15); y < ry(0); y++) for (let x = rx(X - 0.82); x < rx(X + 0.82); x++) px(x, y, y === ry(1.15) ? ST0 : y > ry(0.2) ? ST2 : (y === ry(0.95) ? ST2 : ST1));
+  // a seated guardian lion, frontal, hand-placed: ears, a round mane round a paler face, chest, forelegs, haunches, paws
+  const cx = Math.round(lx(X)) - 4, top = ry(1.15) - LION.length;
+  for (let r = 0; r < LION.length; r++) for (let c = 0; c < 9; c++) {
+    const ch = LION[r].charCodeAt(flip ? 8 - c : c), col = ch === 77 ? ((c + r) % 3 === 0 ? ST2 : ST1) : ch === 70 ? ST0 : ch === 69 ? ST3 : ch === 78 ? ST2 : ch === 66 ? ST1 : ch === 83 ? ST2 : ch === 68 ? ST3 : ch === 72 ? ST0 : CLEAR;
+    if (col !== CLEAR) px(cx + c, top + r, col);
+  }
+  if (flip) { px(cx + 2, top - 1, CR1); px(cx + 1, top, CR1); px(cx + 2, top - 2, PK0); px(cx + 3, top, CR0); }   // a pink coral tuft on its mane
+  sunEdges(i, 1); contact(X, Z, 1.0, 0.7, 1.4);
+}
+
+// ---------- the processional way: three pairs of columns (some broken, all encrusted) ----------
+// K_ANCH: where kelp is rooted on a column top (world X, Z, h) for the corner framing
+const K_ANCH = new Float32Array(6);
+function avColumn(X, Z, hTop, capital, seed) {
+  const i = newSprite(X, Z, X - 1.2, X + 1.2, 0, hTop + 0.9, 2);
+  for (let y = ry(0.45); y < ry(0); y++) for (let x = rx(X - 0.85); x < rx(X + 0.85); x++) px(x, y, y === ry(0.45) ? ST0 : y === ry(0.2) ? ST2 : ST1);   // plinth
+  for (let y = ry(0.62); y < ry(0.45); y++) for (let x = rx(X - 0.72); x < rx(X + 0.72); x++) px(x, y, ST1);                                          // torus
+  shaft(X, 0.62, hTop, 0.56, 0.49, seed, true);
+  if (capital) {
+    for (let y = ry(hTop + 0.32); y < ry(hTop); y++) { const t = (y - ry(hTop + 0.32)) / Math.max(1, ry(hTop) - ry(hTop + 0.32)), hw = lerp(0.74, 0.52, t); for (let x = rx(X - hw); x < rx(X + hw); x++) px(x, y, t > 0.6 ? ST2 : ST1); }
+    for (let y = ry(hTop + 0.58); y < ry(hTop + 0.32); y++) for (let x = rx(X - 0.8); x < rx(X + 0.8); x++) px(x, y, ST1);
+  } else {                                                                            // a broken, jagged top
+    for (let x = rx(X - 0.6); x < rx(X + 0.6); x++) { const j = Math.round(3 * vn(x * 0.35, seed) * CSS * 0.1 + 2 * vn(x * 0.8, seed + 1)); for (let y = ry(hTop) - 3; y < ry(hTop) + j; y++) px(x, y, CLEAR); }
+  }
+  // encrusting sponges and small corals on the shaft (seeded per column, so its growth never changes)
+  const ENC = new Uint8Array([OR1, MG1, CR2, KP1, TL1]);
+  for (let k = 0; k < 3; k++) {
+    const hh = 0.7 + h2(k, 1, seed) * (hTop - 1.4), s = h2(k, 2, seed) < 0.5 ? -1 : 1, ex = lx(X + s * 0.48), ey = ly(hh), r = (0.09 + 0.08 * h2(k, 3, seed)) * CSS;
+    const col = ENC[Math.floor(h2(k, 4, seed) * 5)];
+    ellipse(ex, ey, r * 1.3 + 0.5, r + 0.5, col); px(Math.round(ex - s), Math.round(ey - r), LIGHT[col]);
+  }
+  sunEdges(i, 1); contact(X, Z, 1.0, 0.8, 1.4);
+  return i;
+}
+function bakeAvenue() {
+  avColumn(-9.5, 10, 5.8, false, 101); K_ANCH[0] = -9.5; K_ANCH[1] = 10; K_ANCH[2] = 5.55;
+  avColumn(-9.5, 14.5, 2.4, false, 102); avColumn(9.5, 14.5, 7.5, true, 103); K_ANCH[3] = 9.5; K_ANCH[4] = 14.5; K_ANCH[5] = 8.1;
+  avColumn(-9.5, 19.5, 7.5, true, 104); avColumn(9.5, 19.5, 7.5, true, 105);
+  drum(-11.4, 14.9, 0, 0.56, 1.6, false);                                              // the broken column's drum
+}
+
+// ==========================================================================
+// THE REEF: colonies painted as lit 3D forms (brain domes, boulder corals with polyps, plates, branches, sponges),
+// swaying growth (fans, soft corals, whips, anemones, grass) through the material shader, coral heads, the bommie,
+// and kelp. Every generator draws into the current sprite in sprite pixels, at sizes already scaled to its depth.
+// ==========================================================================
+const KEEP = 64;                                                // material code flag: "keep this palette index"
+function cpx(x, y, c, up) {                                     // a colour pixel + its caustic flag
+  if (x < 0 || y < 0 || x >= SPW[CS] || y >= SPH[CS]) return;
+  const k = y * SPW[CS] + x; SPB[CS][k] = c; SPU[CS][k] = up;
+}
+function qn(L, x, y) { let i = Math.floor(L); const f = L - i; if (f > 0.7 && (f - 0.7) / 0.3 * 16 > bay(x, y)) i++; return i; }   // narrow dither (B3 per-pixel light)
+// colony ramps [deep, shade, base, lit, top]
+const RP = [
+  new Uint8Array([KP2, KP1, KP0, SUN1, SUN1]),     // 0 brain (ochre)
+  new Uint8Array([CR2, CR2, CR1, CR0, PK0]),       // 1 pink boulder
+  new Uint8Array([OR1, OR1, OR0, SUN1, YL0]),      // 2 orange / yellow
+  new Uint8Array([WA1, TL1, TL1, TL0, WA6]),       // 3 teal
+  new Uint8Array([JP3, MG1, MG1, MG0, PK0]),       // 4 purple
+  new Uint8Array([JP3, BL1, BL1, BL0, WA6]),       // 5 blue polyps
+  new Uint8Array([K1, RK2, RK1, RK0, RK0]),        // 6 rock
+  new Uint8Array([RK2, KP2, KP1, KP0, SUN1]),      // 7 olive turf
+  new Uint8Array([TU1, TU1, TU0, SD1, SD0])        // 8 tan
+];
+// a colony: a dome lit from above (and a little from the front), textured by kind:
+// 0 smooth, 1 brain meanders, 2 polyps, 3 vertical ridges, 4 encrusting (flatter). Lb shifts the light (depth on the mound).
+let CCTR = 1;                                                  // local dome contrast (the bommie keeps its big form dominant)
+function colony(cx, cy, rx, ry, rp, kind, seed, Lb) {
+  const R = RP[rp];
+  for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++) for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, e = vn(Math.atan2(v, u) * 2.2 + 9, seed) * 0.22, d = (u * u + v * v) * (1 + e); if (d > 1) continue;
+    const nz = Math.sqrt(1 - Math.min(1, u * u + v * v));
+    let L = 1.9 + ((u * 0.12 - v * 0.8 + nz * 0.5 + 0.3) * 2.9 - 1.9) * CCTR + Lb;
+    if (kind === 1) { if (((vn2(x * 0.34, y * 0.42, seed) * 4) % 1) < 0.22) L -= 1.3; }
+    else if (kind === 2) { if (((x + (y >> 1)) % 3) === 0 && (y & 1) === 0) L -= 1.2; else if (((x + (y >> 1)) % 3) === 1 && (y & 1) === 1) L += 0.4; }
+    else if (kind === 3) { if (((x + Math.round(vn(y * 0.3, seed) * 2)) % 3) === 0) L -= 0.9; }
+    else if (kind === 4) { L = 1.6 + (L - 1.6) * 0.5 + (h2(x, y, seed) < 0.16 ? -0.8 : 0); }
+    if (d > 0.78 && v < -0.3) L += 0.6;                                             // the rim facing the sun
+    cpx(x, y, R[clamp(qn(L, x, y), 0, 4)], v < -0.42 ? 1 : 0);
+  }
+}
+// a rock mound: lit top, strata with wavy joints, darker toward its foot
+function rockMound(cx, by, rw, rh, seed, Lb) {
+  const R = RP[6];
+  for (let x = Math.floor(cx - rw); x <= Math.ceil(cx + rw); x++) {
+    const u = (x + 0.5 - cx) / rw; if (u <= -1 || u >= 1) continue;
+    const top = Math.round(by - rh * Math.pow(1 - u * u, 0.45) * (0.75 + 0.45 * fbm2(x * 0.09, 0.3, seed)));
+    for (let y = top; y <= by; y++) {
+      const v = (y - top) / Math.max(1, by - top), joint = ((y + 2.5 * Math.sin(x * 0.21 + seed)) % 6) < 1 && y > top + 1;
+      let L = 3.1 - v * 2.4 + (vn2(x * 0.25, y * 0.25, seed) - 0.5) * 0.9 + Lb;
+      if (joint) L -= 1; if (y === top) L = 4;
+      cpx(x, y, R[clamp(qn(L, x, y), 0, 4)], y - top < 2 ? 1 : 0);
+    }
+  }
+}
+// a plate coral: seen from below (above eye level: a lit front rim over a dark underside) or from above (a lit top face)
+function plate(cx, cy, rx, th, rp, above, seed) {
+  const R = RP[rp];
+  for (let y = Math.round(cy - th); y <= Math.round(cy + th); y++) {
+    const t = (y - (cy - th)) / (2 * th + 0.01), hw = rx * (0.92 + 0.08 * Math.sin(y * 1.7 + seed)) * (1 - 0.3 * Math.abs(t - 0.3));
+    for (let x = Math.round(cx - hw); x <= Math.round(cx + hw); x++) {
+      const e = Math.abs(x - cx) > hw - 1.5;
+      const lvl = above ? (t < 0.2 ? 3 : t < 0.45 ? 2 : t < 0.75 ? 1 : 0) : (t < 0.15 ? 4 : t < 0.5 ? 3 : t < 0.75 ? 2 : 0);
+      const pol = ((x + (y & 1) * 2) % 4) === 0 && lvl >= 2 && lvl <= 3;
+      cpx(x, y, R[Math.max(0, lvl - (e && lvl > 1 ? 1 : 0) - (pol ? 1 : 0))], !above && t < 0.5 ? 1 : 0);
+    }
+  }
+}
+// a branching colony: upright fingers, lit tips
+function branches(cx, by, h, w, rp, seed) {
+  const R = RP[rp], n = Math.max(3, Math.round(w / 2.2));
+  for (let k = 0; k < n; k++) {
+    const x0 = cx + (k / (n - 1) - 0.5) * w + (h2(k, 1, seed) - 0.5) * 1.5, L = h * (0.55 + 0.45 * h2(k, 2, seed)), lean = (x0 - cx) / Math.max(1, w) * 0.55;
+    for (let j = 0; j < L; j++) {
+      const x = Math.round(x0 + lean * j), y = Math.round(by - j), t = j / L, lvl = t > 0.86 ? 4 : t > 0.6 ? 3 : t > 0.25 ? 2 : 1;
+      cpx(x, y, R[lvl], t > 0.86 ? 1 : 0); if (h > 14 && t < 0.8) cpx(x + 1, y, R[Math.max(0, lvl - 1)], 0);
+      if (t > 0.3 && t < 0.8 && h2(j, k, seed) < 0.14) { const s = h2(j, k + 3, seed) < 0.5 ? -1 : 1; for (let q = 1; q < 3 + (L > 20 ? 2 : 0); q++) cpx(x + s * q, y - q, R[Math.min(4, lvl + (q > 1 ? 1 : 0))], 0); }
+    }
+  }
+}
+// tube sponges: cylinders with a dark opening and a sunlit lip
+function tubes(cx, by, h, n, rp, seed) {
+  const R = RP[rp];
+  for (let k = 0; k < n; k++) {
+    const tw = Math.max(2, Math.round(h * 0.2)), tx = Math.round(cx + (k - (n - 1) / 2) * (tw + 1)), th = Math.max(3, Math.round(h * (0.55 + 0.45 * h2(k, 2, seed))));
+    for (let j = 0; j < th; j++) for (let a = 0; a < tw; a++) { const lvl = a === 0 ? 3 : a === tw - 1 ? 1 : 2; cpx(tx + a, by - j, R[j < 2 ? Math.max(0, lvl - 1) : lvl], 0); }
+    for (let a = 1; a < tw - 1; a++) cpx(tx + a, by - th + 1, K1, 0);
+    for (let a = 0; a < tw; a++) cpx(tx + a, by - th, R[a === 0 || a === tw - 1 ? 3 : 4], 1);
+  }
+}
+function starfish(cx, cy, r) { for (let k = 0; k < 5; k++) { const a = -Math.PI / 2 + k * TAU / 5; for (let j = 0; j <= r; j++) cpx(Math.round(cx + Math.cos(a) * j), Math.round(cy + Math.sin(a) * j * 0.75), j < 1 ? SUN1 : k === 0 || k === 1 ? OR0 : OR1, 0); } }
+function urchin(cx, cy, r) { for (let k = 0; k < 9; k++) { const a = Math.PI + k / 8 * Math.PI; for (let j = 1; j <= r * 2.1; j++) cpx(Math.round(cx + Math.cos(a) * j), Math.round(cy + Math.sin(a) * j * 0.9), j > r * 1.7 ? BL1 : JP3, 0); } for (let y = Math.floor(cy - r * 0.8); y <= Math.ceil(cy + r * 0.8); y++) for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) { const u = (x + 0.5 - cx) / r, v = (y + 0.5 - cy) / (r * 0.8); if (u * u + v * v <= 1) cpx(x, y, v < -0.5 ? JP3 : K1, 0); } }
+
+// ---------- swaying growth: material codes, lit by the shader ----------
+// a sea fan: a lacy net spreading from a short trunk: a solid rim and radiating branches over a 50% mesh, the upper part
+// lit and its top edge catching the sun (painted in colours directly: the shader would light every mesh pixel as a top)
+const FANC = new Uint8Array(16 * 4);
+FANC.set([JP3, MG1, MG0, PK0], M_MAG * 4); FANC.set([CR2, CR1, CR0, PK0], M_PINK * 4); FANC.set([TU1, OR1, OR0, SUN1], M_ORNG * 4);
+function gFan(cx, by, h, w, seed, code) {
+  const C = code * 4, ty = by - Math.max(2, h * 0.16), R = h * 0.84, hw = w / 2, nb = 3.4 + h2(1, 2, seed);
+  for (let y = Math.round(ty); y <= by; y++) { px(Math.round(cx), y, FANC[C] | KEEP); if (h > 22) px(Math.round(cx) + 1, y, FANC[C + 1] | KEEP); }
+  for (let y = Math.floor(ty - R) - 1; y <= Math.ceil(ty); y++) for (let x = Math.floor(cx - hw - 1); x <= Math.ceil(cx + hw + 1); x++) {
+    const dx = (x + 0.5 - cx) / hw * R, dy = ty - (y + 0.5), r = Math.sqrt(dx * dx + dy * dy), a = Math.atan2(dx, dy + 0.01);
+    const Re = R * (0.8 + 0.2 * vn(a * 3.5, seed)); if (Math.abs(a) > 1.35 || r > Re) continue;
+    const up = clamp(dy / R, 0, 1), rim = r > Re - 1.3 || Math.abs(a) > 1.35 - 1.2 / Math.max(r, 1);
+    const br = Math.abs(((a * nb / Math.PI + 0.5 + vn(r * 0.09, seed) * 0.45) % 1 + 1) % 1 - 0.5) < Math.max(0.035, 0.55 / Math.max(r, 1));
+    let c;
+    if (rim || br) c = up > 0.55 ? FANC[C + 2] : FANC[C + 1];
+    else if (vn2(x * 0.62, y * 0.62, seed + 3) > 0.46) c = up > 0.6 ? FANC[C + 1] : FANC[C];   // an irregular net, not a grid
+    else continue;
+    if (rim && dy > R * 0.62 && (x & 1)) c = FANC[C + 3];
+    px(x, y, c | KEEP);
+  }
+}
+function gAnemone(cx, by, r, seed, code) {                      // tentacles only
+  const n = Math.max(7, Math.round(r * 1.6)), disc = by - Math.max(1, Math.round(r * 0.3));
+  for (let k = 0; k < n; k++) {
+    const a = -Math.PI / 2 + (k / (n - 1) - 0.5) * 2.6, L = r * (0.75 + 0.5 * h2(k, 1, seed)), wig = h2(k, 2, seed) * TAU;
+    for (let j = 0; j <= L; j++) { const t = j / L; px(Math.round(cx + Math.cos(a) * j * 0.9 + Math.sin(t * 4 + wig) * 0.7), Math.round(disc + Math.sin(a) * j), t > 0.7 ? code | HI_ : code); }
+  }
+}
+function gSoft(cx, by, h, seed, code) {
+  const n = 3 + Math.floor(h2(1, 1, seed) * 3), lr = Math.max(1.2, h * 0.15);
+  for (let k = 0; k < n; k++) {
+    const a = -Math.PI / 2 + (k / Math.max(1, n - 1) - 0.5) * 1.3, L = h * (0.55 + 0.3 * h2(k, 2, seed)), ex = cx + Math.cos(a) * L, ey = by + Math.sin(a) * L;
+    line(cx, by, ex, ey, code | G_);
+    ellipse(ex, ey, lr * 1.2, lr, code);
+    for (let q = 0; q < 3; q++) ellipse(ex + (h2(q, k, seed) - 0.5) * lr * 2.2, ey + (h2(q, k + 7, seed) - 0.5) * lr * 1.4, lr * 0.7, lr * 0.6, q === 0 ? code | HI_ : code);
+  }
+}
+function gWhip(cx, by, h, n, seed, code) {
+  for (let k = 0; k < n; k++) {
+    const x0 = cx + (k - (n - 1) / 2) * 2.2, bend = (h2(k, 1, seed) - 0.5) * 0.5, L = h * (0.6 + 0.4 * h2(k, 2, seed));
+    for (let j = 0; j <= L; j++) { const t = j / L; px(Math.round(x0 + bend * j * t * 1.5), Math.round(by - j), t > 0.85 ? code | HI_ : code); }
+  }
+}
+function gGrass(cx, by, h, n, seed) {
+  for (let k = 0; k < n; k++) {
+    const x0 = cx + (h2(k, 1, seed) - 0.5) * h * 0.9, L = h * (0.5 + 0.5 * h2(k, 2, seed)), bend = (h2(k, 3, seed) - 0.3) * 0.35;
+    for (let j = 0; j <= L; j++) px(Math.round(x0 + bend * j * j / L), Math.round(by - j), (k & 1) ? M_ALG : M_ALG | HI_);
+  }
+}
+
+// ---------- a coral head: a rock crowded with colonies (static) + what sways on it (a second sprite) ----------
+const CHX = new Float32Array(8), CHH = new Float32Array(8), CHR = new Float32Array(8), CHT = new Uint8Array(8);
+function coralHead(X, Z, wm, seed, style) {
+  const a = newSprite(X, Z, X - wm * 0.85, X + wm * 0.85, 0, wm * 1.25, 3), s = CSS, cx = lx(X), by = ry(0) - 1;
+  rockMound(cx, by, wm * 0.5 * s, wm * 0.34 * s, seed, 0);
+  const n = 3 + Math.floor(h2(1, 1, seed) * 4);
+  for (let k = 0; k < n; k++) {                                   // colonies over the mound, the highest drawn first
+    const u = (h2(k, 2, seed) - 0.5) * 1.5;
+    CHX[k] = X + u * wm * 0.4; CHH[k] = wm * (0.12 + 0.3 * (1 - Math.abs(u) * 0.8) * h2(k, 3, seed)); CHR[k] = wm * (0.14 + 0.13 * h2(k, 4, seed));
+    CHT[k] = Math.floor(h2(k, 5, seed + style) * 6);
+  }
+  for (let p = 0; p < n; p++) { let b = p; for (let q = p + 1; q < n; q++) if (CHH[q] > CHH[b]) b = q; const t0 = CHX[p], t1 = CHH[p], t2 = CHR[p], t3 = CHT[p]; CHX[p] = CHX[b]; CHH[p] = CHH[b]; CHR[p] = CHR[b]; CHT[p] = CHT[b]; CHX[b] = t0; CHH[b] = t1; CHR[b] = t2; CHT[b] = t3; }
+  const TY = [0, 1, 2, 3, 4, 5], KD = [1, 2, 2, 2, 4, 2];
+  for (let k = 0; k < n; k++) { const t = TY[CHT[k]]; colony(lx(CHX[k]), ly(CHH[k]), CHR[k] * s * 1.15, CHR[k] * s * 0.9, t, KD[CHT[k]], seed + k * 7, -0.25 + CHH[k] / wm); }
+  const top = ly(wm * 0.45);
+  if (style === 0) branches(cx - wm * 0.12 * s, top + wm * 0.12 * s, wm * 0.42 * s, wm * 0.3 * s, 1, seed);
+  else if (style === 1) plate(cx + wm * 0.1 * s, top, wm * 0.42 * s, Math.max(1.5, wm * 0.06 * s), 3, false, seed);
+  else if (style === 2) tubes(cx + wm * 0.18 * s, top + wm * 0.1 * s, wm * 0.4 * s, 3, 2, seed);
+  else if (style === 3) branches(cx + wm * 0.1 * s, top + wm * 0.12 * s, wm * 0.36 * s, wm * 0.34 * s, 4, seed);
+  const b = newSprite(X, Z, X - wm * 0.95, X + wm * 0.95, 0, wm * 1.9, 3), bcx = lx(X), bt = ly(wm * 0.4);
+  if (style === 0 || style === 3) gFan(bcx + wm * 0.2 * CSS, bt, wm * 0.85 * CSS, wm * 1.0 * CSS, seed, style === 0 ? M_MAG : M_PINK);
+  else if (style === 1) gSoft(bcx - wm * 0.2 * CSS, bt, wm * 0.55 * CSS, seed, M_PINK);
+  else if (style === 2) gAnemone(bcx - wm * 0.15 * CSS, bt + 1, wm * 0.3 * CSS, seed, M_PALE);
+  else gWhip(bcx + wm * 0.1 * CSS, bt, wm * 0.9 * CSS, 3, seed, M_PINK);
+  if (h2(7, 7, seed) < 0.5) gGrass(bcx + wm * 0.45 * CSS, ry(0) - 1, wm * 0.35 * CSS, 5, seed);
+  shadeSprite(b, 2, 8, 0);
+  setSway(b, Math.min(2.2, 0.6 + CSS * 0.06), 5, seed * 0.37, ry(0));
+  contact(X, Z, wm * 0.55, Math.max(0.35, wm * 0.35), 1.25);
+}
+// a free-standing plant group (fan, whips, soft coral, grass, an anemone) on a small rock
+function plants(X, Z, hm, seed, kind) {
+  const b = newSprite(X, Z, X - hm * 0.8, X + hm * 0.8, 0, hm * 1.2, 3), cx = lx(X), by = ry(0) - 1, s = CSS;
+  if (kind === 0) gFan(cx, by, hm * s, hm * 1.1 * s, seed, M_MAG);
+  else if (kind === 1) gFan(cx, by, hm * s, hm * 1.0 * s, seed, M_PINK);
+  else if (kind === 2) gWhip(cx, by, hm * s, 4, seed, M_ORNG);
+  else if (kind === 3) gSoft(cx, by, hm * s, seed, M_MAG);
+  else if (kind === 4) gGrass(cx, by, hm * s, 9, seed);
+  else if (kind === 5) gAnemone(cx, by, hm * 0.5 * s, seed, M_PALE);
+  shadeSprite(b, 2, 8, 0); setSway(b, Math.min(2.4, 0.8 + s * 0.07), 5, seed * 0.53, ry(0));
+  const r = newSprite(X, Z, X - hm * 0.35, X + hm * 0.35, 0, hm * 0.3, 2);
+  rockMound(lx(X), ry(0) - 1, hm * 0.24 * CSS, hm * 0.17 * CSS, seed + 11, 0);
+  if (kind === 5) colony(lx(X), ly(hm * 0.1), hm * 0.14 * CSS, hm * 0.1 * CSS, 1, 0, seed, 0.3);
+  contact(X, Z, hm * 0.3, 0.3, 1.1);
+}
+
+// ---------- the bommie: the coral outcrop that hides the temple at the opening (z 7, X -9.4) ----------
+const BOM_X = -9.4, BOM_Z = 7, MORAY_X = -11.25, MORAY_H = 1.55, ANEM_X = -7.35, ANEM_H = 3.05;
+let BOM_A = 0, BOM_B = 0;
+function bomTop(X) {                                            // the rock core's profile (metres above the seabed)
+  const u = (X - BOM_X) / 3.7; if (Math.abs(u) >= 1) return 0;
+  return 0.9 * ((5.35 + 0.35 * Math.cos(u * 2.2)) * Math.pow(1 - Math.pow(Math.abs(u), 3.2), 0.42) + 0.35 * Math.sin(X * 3.1) + 0.25 * vn(X * 2.3, 131));
+}
+// colony types by weight: mostly ochre brain, olive turf, tan and bare rock; pink, orange, teal, purple, blue as accents
+const BOMT = new Uint8Array([0, 0, 0, 0, 0, 7, 7, 7, 7, 8, 8, 8, 6, 6, 1, 1, 2, 3, 4, 5]), BOMK = new Uint8Array([1, 2, 2, 2, 4, 2, 0, 4, 2]);
+function bakeBommie() {
+  const a = BOM_A = newSprite(BOM_X, BOM_Z, BOM_X - 4.3, BOM_X + 4.3, 0, 7.0, 3), s = CSS;
+  // the rock core, dark (it shows only between colonies)
+  for (let x = 0; x < SPW[a]; x++) {
+    const X = wX(x), top = bomTop(X); if (top <= 0) continue;
+    for (let y = ry(top); y <= ry(0) + 1; y++) { const hh = wH(y), L = 1.2 + (hh / 6) * 1.4 + (vn2(x * 0.2, y * 0.2, 141) - 0.5) - (((y + 3 * Math.sin(x * 0.1)) % 9) < 1 ? 0.8 : 0); cpx(x, y, RP[6][clamp(qn(L, x, y), 0, 3)], 0); }
+  }
+  // colonies in rows from the top down: each row overlaps the one above; lower on the mound = less light
+  let k = 0; CCTR = 0.72;
+  for (let hh = 5.4; hh > -0.3; hh -= 0.4) {
+    const big = hh > 3.1;
+    for (let X = BOM_X - 3.9 + h2(Math.round(hh * 10), 0, 182) * 0.4; X < BOM_X + 3.9; X += (big ? 0.62 : 0.5) + h2(k, 1, 181) * 0.4) {
+      k++;
+      if (Math.max(bomTop(X), bomTop(X + 0.45), bomTop(X - 0.45)) < hh - 0.1) continue;          // colonies may overhang the flanks
+      if (h2(k, 6, 181) < 0.16 && hh < 4.9) continue;                                           // gaps: the dark rock shows
+      const r = (big ? 0.32 : 0.22) + (big ? 0.38 : 0.28) * h2(k, 2, 181), yv = hh + (h2(k, 3, 181) - 0.5) * 0.18;
+      if (Math.abs(X - MORAY_X) < 0.55 && Math.abs(yv - MORAY_H) < 0.45) continue;
+      if (Math.abs(X - ANEM_X) < 0.4 && Math.abs(yv - ANEM_H) < 0.3) continue;
+      const t = BOMT[Math.floor(h2(k, 4, 181) * BOMT.length)];
+      colony(lx(X), ly(yv), r * s * (1.0 + 0.35 * h2(k, 5, 181)), r * s * (0.55 + 0.35 * h2(k, 7, 181)), t, BOMK[t], 190 + k, -1.5 + clamp(hh / 4.9, 0, 1) * 2.0);
+    }
+  }
+  CCTR = 1;
+  // plates jutting from the flanks, branches and sponges on top, the moray's hole, the anemone's ledge
+  plate(lx(-6.05), ly(3.4), 0.85 * s, 3.2, 3, true, 211); plate(lx(-12.6), ly(2.25), 0.62 * s, 2.6, 3, false, 212); plate(lx(-8.35), ly(0.95), 0.5 * s, 2.2, 5, false, 213);
+  branches(lx(-11.9), ry(bomTop(-11.9)) + 5, 0.5 * s, 0.55 * s, 1, 221); branches(lx(-8.9), ry(bomTop(-8.9)) + 4, 0.42 * s, 0.45 * s, 4, 222);
+  branches(lx(-6.7), ry(bomTop(-6.7)) + 4, 0.34 * s, 0.4 * s, 2, 225);
+  tubes(lx(-11.65), ry(2.7), 0.6 * s, 3, 2, 223); tubes(lx(-7.3), ry(1.9), 0.42 * s, 2, 2, 224);
+  const mx = lx(MORAY_X), my = ly(MORAY_H);
+  for (let y = Math.floor(my - 0.3 * s); y <= Math.ceil(my + 0.26 * s); y++) for (let x = Math.floor(mx - 0.38 * s); x <= Math.ceil(mx + 0.38 * s); x++) {
+    const u = (x + 0.5 - mx) / (0.38 * s), v = (y + 0.5 - my) / (0.27 * s), d = u * u + v * v * (1 + 0.2 * Math.sin(u * 5)); if (d > 1) continue;
+    cpx(x, y, d > 0.72 ? (v < 0 ? RK2 : RK1) : K0, 0);
+  }
+  plate(lx(ANEM_X), ly(ANEM_H - 0.08), 0.34 * s, 2, 6, false, 214);
+  for (let y = ry(ANEM_H) - 3; y <= ry(ANEM_H); y++) for (let x = rx(ANEM_X - 0.18); x < rx(ANEM_X + 0.18); x++) cpx(x, y, y === ry(ANEM_H) - 3 ? CR0 : x === rx(ANEM_X - 0.18) ? CR0 : CR1, 0);
+  starfish(lx(-10.1), ly(2.3), 0.2 * s); starfish(lx(-7.9), ly(0.7), 0.16 * s);
+  urchin(lx(-9.4), ly(0.45), 0.09 * s); urchin(lx(-8.8), ly(0.5), 0.07 * s); urchin(lx(-12.9), ly(1.0), 0.08 * s);
+  // the sway layer: fans, soft corals, sea whips, the clownfish's anemone, grass at the foot
+  const b = BOM_B = newSprite(BOM_X, BOM_Z, BOM_X - 4.4, BOM_X + 4.4, 0, 7.8, 3);
+  gFan(lx(-9.6), ry(bomTop(-9.6)) + 5, 1.2 * CSS, 1.45 * CSS, 171, M_MAG);
+  gFan(lx(-7.0), ry(bomTop(-7.0)) + 4, 0.8 * CSS, 0.95 * CSS, 172, M_PINK);
+  gFan(lx(-12.5), ry(bomTop(-12.5)) + 4, 0.7 * CSS, 0.8 * CSS, 170, M_ORNG);
+  gSoft(lx(-8.2), ry(bomTop(-8.2)) + 4, 0.5 * CSS, 173, M_PINK); gSoft(lx(-11.2), ry(bomTop(-11.2)) + 4, 0.45 * CSS, 174, M_MAG);
+  gWhip(lx(-10.4), ry(bomTop(-10.4)) + 4, 0.8 * CSS, 3, 175, M_ORNG);
+  gAnemone(lx(ANEM_X), ry(ANEM_H) - 3, 0.4 * CSS, 176, M_PALE);
+  gGrass(lx(-13.1), ry(0), 0.5 * CSS, 7, 177); gGrass(lx(-5.6), ry(0), 0.4 * CSS, 6, 178);
+  shadeSprite(b, 3, 10, 0); setSway(b, 2.2, 5, 0.4, ry(0));
+}
+
+// ---------- reef layout (world X, depth Z, size m, seed, style) ----------
+function bakeReef() {
+  bakeBommie();
+  // the left garden (the opening and the reveal)
+  coralHead(-17, 8.5, 1.7, 201, 0); plants(-13.9, 9.4, 1.6, 202, 0); coralHead(-19.8, 11, 1.4, 203, 1); coralHead(-15.6, 12.6, 1.3, 204, 2);
+  plants(-22.4, 13, 0.7, 205, 4); coralHead(-24, 18, 1.5, 206, 1); plants(-19, 22, 1.4, 207, 2); coralHead(-24.5, 28, 1.6, 208, 3);
+  coralHead(-18.2, 31, 1.4, 209, 0); coralHead(-27, 35, 1.8, 210, 4); plants(-12.4, 17.5, 1.2, 211, 3); coralHead(-29, 23, 1.6, 212, 2);
+  drum(-19.2, 16, 0, 0.55, 3.2, false);                                                     // a fallen column in the garden
+  // along the processional way's edges
+  coralHead(-8.2, 12, 0.9, 221, 3); plants(-7.8, 17, 0.8, 222, 5); plants(-8.5, 23, 1.2, 223, 1); coralHead(-7.7, 27.5, 1.0, 224, 2);
+  coralHead(8.1, 11.6, 1.1, 225, 0); coralHead(7.9, 16.6, 1.0, 226, 1); plants(8.4, 22, 1.3, 227, 0); coralHead(7.7, 26.6, 1.0, 228, 4);
+  plants(-6.9, 20.5, 0.5, 229, 4); plants(7.0, 13.8, 0.5, 230, 4);
+  // the right garden (the held shot)
+  plants(11.6, 15.5, 1.9, 241, 1); coralHead(13.6, 18, 1.5, 242, 2); coralHead(11.2, 21.2, 1.3, 243, 1); coralHead(15.2, 24.6, 1.5, 244, 4);
+  coralHead(17.6, 30, 1.6, 245, 0); coralHead(21, 34, 1.4, 246, 3); plants(19.2, 26, 1.5, 247, 2); coralHead(23, 32, 1.7, 248, 1);
+  plants(14.2, 13, 0.7, 249, 4);
+  // round the temple: beside the plinth, on the treads
+  coralHead(-14.6, 31, 1.2, 261, 1); coralHead(16.2, 33.4, 1.2, 262, 0);
+  let n0 = SN;                                                                              // on the lowest tier's tread (1 m up)
+  coralHead(-11.8, 32.35, 0.55, 263, 0); plants(12.3, 32.4, 0.6, 264, 1); plants(-6.9, 32.3, 0.35, 265, 5);
+  liftTo(n0, SN, 1); n0 = SN;                                                               // on the middle tier's tread (2 m up)
+  coralHead(-9.6, 33.35, 0.5, 266, 2); coralHead(10.6, 33.3, 0.45, 267, 1);
+  liftTo(n0, SN, 2);
+}
+function liftTo(i0, i1, h) { for (let i = i0; i < i1; i++) SPY0[i] = Math.round(SPY0[i] - h * F / SPZ[i]); }
+
+// ---------- kelp: rooted stalks bending with the current; ribbon blades float up and trail (drawn live, depth-tested) ----------
+const KN = 12, KX = new Float32Array(KN), KZ = new Float32Array(KN), KB = new Float32Array(KN), KL = new Float32Array(KN), KLEAN = new Float32Array(KN), KPH = new Float32Array(KN), KSOFT = new Uint8Array(KN);
+const KC = new Uint8Array(KN * 4);                                // per stalk: shade, body, lit edge, rim (hazed by depth)
+function kelpDef(k, X, Z, h0, len, lean, soft) {
+  KX[k] = X; KZ[k] = Z; KB[k] = h0; KL[k] = len; KLEAN[k] = lean; KPH[k] = hash(k * 13 + 5) * TAU; KSOFT[k] = soft;
+  const n = Z > 62 ? 2 : Z > 40 ? 1 : 0, cs = [KP2, KP1, KP0, SUN1];
+  for (let j = 0; j < 4; j++) { let c = cs[j]; for (let q = 0; q < n; q++) c = FOGL[c]; KC[k * 4 + j] = c; }
+}
+function bakeKelp() {
+  kelpDef(0, K_ANCH[0], K_ANCH[1], K_ANCH[2], 5.2, 1.05, 1);        // the top-left corner, rooted on the near broken column
+  kelpDef(1, K_ANCH[3], K_ANCH[4], K_ANCH[5], 4.6, 0.55, 1);        // the top-right corner, rooted on a capital
+  kelpDef(2, -14, 20, 0, 7, 0.22, 0); kelpDef(3, -15.2, 26, 0, 8.5, 0.24, 0); kelpDef(4, -20.5, 38, 0, 9, 0.26, 0);
+  kelpDef(5, 12.6, 28, 0, 8, 0.26, 0); kelpDef(6, 14.8, 36, 0, 9.5, 0.26, 0); kelpDef(7, -23, 30.5, 0, 6, 0.22, 0);
+  kelpDef(8, 18.2, 22, 0, 7, 0.24, 0);
+  kelpDef(9, 8.0, 34.4, 10.2, 3.6, 0.45, 0);                        // streaming from the temple's broken corner
+  kelpDef(10, -10.9, 34.4, 10.66, 2.6, 0.4, 0);                     // from the left end of the cornice
+  kelpDef(11, -9.2, 8.8, 0, 7.4, 0.55, 1);                          // the top-left corner: rooted just outside the held shot
+}
+const DZ = new Float64Array(1), DB = new Uint8Array(1);          // the depth and HD blur class of what is being drawn
+function pxd(x, y, c) {                                         // depth-tested pixel
+  if (x < 0 || x >= W || y < 0 || y >= H) return;
+  const i = y * W + x; if (ZD[i] <= DZ[0]) return;
+  FB[i] = c; ZD[i] = DZ[0]; BLC[i] = DB[0];
+}
+function kelpDraw(k) {
+  const Z = KZ[k], s = F / Z, bx = VPX + (KX[k] - CAMS[0]) * s, by = HZC + (CAMH - KB[k]) * s, hp = KL[k] * s, ln = KLEAN[k];
+  if (bx < -hp * (1 + ln) - 20 || bx > W + 20) return;
+  DZ[0] = Z; DB[0] = KSOFT[k] ? 3 : 0;
+  const w0 = TAU * 6 * gT / LOOP + KPH[k], w1 = TAU * 4 * gT / LOOP + KPH[k] * 1.7, amp = Math.min(8, 0.08 * hp + 1.5);
+  const cD = KC[k * 4], cB = KC[k * 4 + 1], cL = KC[k * 4 + 2], cR = KC[k * 4 + 3];
+  const sp = Math.max(3, Math.round(0.42 * s)), bw = Math.max(1, Math.round(0.12 * s)), bL = Math.max(4, Math.round(0.95 * s));
+  let prevX = Math.round(bx);
+  for (let j = 0; j <= hp; j++) {
+    const f = j / hp, y = Math.round(by - j); if (y < -bL) break;
+    // the stalk bows over in the current from its base (part linear, part quadratic), and sways with the surge
+    const x = Math.round(bx + ln * hp * (0.45 * f + 0.55 * f * f) + amp * f * f * Math.sin(w0 - j * 0.035) + amp * 0.35 * f * Math.sin(w1 - j * 0.02));
+    pxd(x, y, cB); if (x !== prevX) pxd(prevX, y, cB);
+    prevX = x;
+    if (j > 3 && (j % sp) === 0) {                                  // a ribbon blade: out from the stalk, then up, trailing with the current
+      const side = ((j / sp) & 1) ? 1 : -1, tr = 0.5 + 0.5 * Math.sin(w0 - j * 0.035 + 1.2);
+      pxd(x + side, y, cL);                                         // the float at its base
+      for (let q = 1; q <= bL; q++) {
+        const t = q / bL, qx = Math.round(x + side * Math.min(q, 2) + (q > 2 ? (q - 2) * (0.25 + 0.3 * tr + ln * 0.55) : 0)), qy = y - 1 - Math.round(q * (0.8 - 0.25 * t));
+        pxd(qx, qy, t > 0.85 ? cB : cL);
+        for (let a = 1; a <= bw; a++) pxd(qx, qy + a, a === bw ? cD : cB);
+      }
+    }
+  }
+}
+
+// ==========================================================================
+// MARINE LIFE (all pure functions of loop time except the bubbles): fish, the turtle, the jellyfish, the moray,
+// the giant clam; then the bubbles (a pooled effect) and marine snow. Everything swims in world space and is
+// drawn depth-tested against what the static pass left in ZD.
+// Zero allocation: values computed per frame reach the draw helpers through preallocated registers (typed arrays),
+// never as fresh floating-point arguments, which the engine would box on every call.
+// ==========================================================================
+
+// ---------- fish: an ellipse body, a flicking tail, an eye; the back takes the sun (top-lit rim) ----------
+// kind: 0 silver schooler, 1 yellow tang, 2 blue tang, 3 orange anthias, 4 clownfish, 5 angelfish
+const FB0 = new Uint8Array([ST1, KP0, BL1, OR1, OR1, ST2]), FB1 = new Uint8Array([ST0, YL0, BL0, OR0, OR0, ST0]), FBR = new Uint8Array([SUN0, SUN0, WA6, SUN1, SUN1, SUN1]);
+const FR = new Float64Array(5);                                   // fish registers: X, h, Z, length (m), camera
+function fish(kind, dir, ph) {
+  const Z = FR[2], s = F / Z, cx = VPX + (FR[0] - FR[4]) * s, cy = HZC + (CAMH - FR[1]) * s, lp = FR[3] * s;
+  if (cx < -12 || cx > W + 12 || cy < -8 || cy > H + 8) return;
+  DZ[0] = Z; DB[0] = 0;
+  const x0 = Math.round(cx), y0 = Math.round(cy), deep = kind === 5 ? 0.62 : kind === 1 || kind === 2 ? 0.45 : 0.28;
+  const c0 = FB0[kind], c1 = FB1[kind], rim = FBR[kind];
+  if (lp < 4.6) {                                                   // tiny: a 3-4 px dart that glints
+    const n = lp < 3.2 ? 3 : 4, glint = ((frame >> 3) + ph * 7) % 5 === 0;
+    for (let k = 0; k < n; k++) pxd(x0 - dir * (k - 1), y0, k === n - 1 ? c0 : glint && k === 1 ? SUN0 : c1);
+    if (n === 4) pxd(x0, y0 - 1, glint ? rim : c0);                                         // the back, flashing as it turns
+    return;
+  }
+  const rxv = lp * 0.36, ryv = Math.max(1, lp * deep * 0.5), flick = ((frame / 5 | 0) + ph) & 1;
+  for (let y = Math.floor(-ryv); y <= Math.ceil(ryv); y++) for (let x = Math.floor(-rxv); x <= Math.ceil(rxv); x++) {
+    const u = (x + 0.5) / rxv, v = (y + 0.5) / ryv; if (u * u + v * v > 1) continue;
+    let c = v < -0.35 ? c0 : c1;
+    if (v < -0.62 || (u * u + (v - 0.14) * (v - 0.14) > 0.95 && v < 0)) c = rim;
+    if (kind === 4 && (Math.abs(u - 0.25) < 0.14 || Math.abs(u + 0.35) < 0.14)) c = SUN0;                 // clownfish bands
+    if (kind === 5 && ((x + 40) % 3) === 0) c = K1;                                                        // angelfish stripes
+    pxd(x0 + dir * x, y0 + y, c);
+  }
+  const tx = x0 - dir * Math.round(rxv + 1);
+  for (let k = 0; k < Math.max(1, Math.round(lp * 0.18)); k++) { pxd(tx - dir * k, y0 - 1 - k + flick, c0); pxd(tx - dir * k, y0 + 1 + k - (1 - flick), c0); }
+  if (kind === 5) { for (let k = 1; k <= Math.round(ryv); k++) { pxd(x0 - dir * Math.round(rxv * 0.3), y0 - Math.round(ryv) - k + 1, rim); pxd(x0 - dir * Math.round(rxv * 0.3), y0 + Math.round(ryv) + k - 1, c0); } }
+  if (lp >= 6) pxd(x0 + dir * Math.round(rxv * 0.55), y0 - (ryv > 1.5 ? 1 : 0), K0);
+}
+// reef fish on periodic loops round an anchor (X, h, Z): whole cycles per loop; they face the way they swim
+const RFN = 14;
+const RF = new Float32Array([
+  // X,     h,    Z,    rx,   rh,   len,  kind, fx, fh, ph
+  -8.5,  4.4,  6.3,  0.9,  0.35, 0.22, 1, 2, 3, 0.4,
+  -9.3,  4.9,  6.4,  0.7,  0.3,  0.2,  1, 3, 4, 2.1,
+  -11.7, 3.4,  6.5,  0.6,  0.25, 0.24, 2, 2, 5, 1.3,
+  -9.9,  6.3,  6.8,  0.5,  0.3,  0.12, 3, 4, 5, 0.2,
+  -10.3, 6.0,  6.8,  0.6,  0.25, 0.11, 3, 3, 6, 3.3,
+  -9.4,  6.6,  6.8,  0.4,  0.2,  0.12, 3, 5, 7, 5.1,
+  -17.1, 1.8,  8.2,  0.7,  0.3,  0.2,  1, 2, 3, 1.7,
+  -19.4, 2.5, 10.7,  0.8,  0.35, 0.22, 2, 3, 4, 4.2,
+  -15.6, 1.6, 12.3,  0.6,  0.25, 0.14, 3, 4, 5, 2.9,
+   8.2,  3.5, 14.0,  0.9,  0.4,  0.34, 5, 2, 3, 0.9,
+  -8.7,  2.8, 16.4,  0.8,  0.35, 0.32, 5, 2, 3, 3.9,
+   7.9,  1.9, 11.3,  0.7,  0.3,  0.2,  1, 3, 4, 5.5,
+  13.4,  2.2, 17.8,  0.8,  0.3,  0.22, 2, 2, 5, 1.1,
+  11.3,  2.9, 21.0,  0.6,  0.25, 0.16, 3, 4, 3, 2.4
+]);
+function reefFish() {
+  FR[4] = CAMS[0];
+  for (let k = 0; k < RFN; k++) {
+    const o = k * 10, fx = RF[o + 7], fh = RF[o + 8], ph = RF[o + 9], a = TAU * fx * gT / LOOP + ph;
+    FR[0] = RF[o] + RF[o + 3] * Math.sin(a); FR[1] = RF[o + 1] + RF[o + 4] * Math.sin(TAU * fh * gT / LOOP + ph * 1.7); FR[2] = RF[o + 2]; FR[3] = RF[o + 5];
+    fish(RF[o + 6], Math.cos(a) >= 0 ? 1 : -1, k);
+  }
+  for (let k = 0; k < 2; k++) {                                   // clownfish, never far from their anemone
+    const a = TAU * (7 + k * 2) * gT / LOOP + k * 2.4;
+    FR[0] = ANEM_X + 0.16 * Math.sin(a); FR[1] = ANEM_H + 0.28 + 0.08 * Math.sin(TAU * 9 * gT / LOOP + k); FR[2] = 6.85; FR[3] = 0.11;
+    fish(4, Math.cos(a) >= 0 ? 1 : -1, k);
+  }
+  for (let k = 0; k < 9; k++) {                                   // a tiny silver shoal darting in the door light
+    const a = TAU * (5 + (k % 3)) * gT / LOOP + k * 0.7;
+    FR[0] = -0.9 + (k % 3) * 0.8 + 0.7 * Math.sin(a); FR[1] = 5.2 + ((k / 3) | 0) * 0.45 + 0.25 * Math.sin(TAU * 6 * gT / LOOP + k); FR[2] = 31.2; FR[3] = 0.2;
+    fish(0, Math.cos(a) >= 0 ? 1 : -1, k);
+  }
+}
+// the school: a loose ball of silver fish crossing left -> right once per loop (off screen at the loop point)
+const SCN = 26;
+function school() {
+  const Xc = -32 + 2.37 * gT, hc = 8.4 + 0.5 * Math.sin(TAU * 2 * gT / LOOP), Zc = 16 + 1.2 * Math.sin(TAU * gT / LOOP);
+  FR[4] = CAMS[0]; FR[3] = 0.36;
+  for (let k = 0; k < SCN; k++) {
+    const a = TAU * 8 * gT / LOOP + k * 0.9;
+    FR[0] = Xc + (hash(k * 3 + 1) - 0.5) * 3.8 + 0.5 * Math.sin(a); FR[1] = hc + (hash(k * 3 + 2) - 0.5) * 1.5 + 0.3 * Math.sin(TAU * 6 * gT / LOOP + k * 1.7);
+    FR[2] = Zc + (hash(k * 3 + 3) - 0.5) * 2.4;
+    fish(0, 1, k);
+  }
+}
+
+// ---------- the turtle: glides in from the left as the reveal completes and crosses above the temple ----------
+// flipper angles per pose (0 = straight back; negative = raised): the near front flipper sweeps, the far one lags
+const TFA = new Float32Array([-0.75, -0.2, 0.55, 0.15]), TFB = new Float32Array([0.35, -0.45, -0.6, 0.1]);
+const FLR = new Float64Array(4);                                  // flipper registers: base x, base y, length, angle
+function flipper(c1, c2) {
+  const bx = FLR[0], by = FLR[1], len = FLR[2], dx = -Math.cos(FLR[3]), dy = Math.sin(FLR[3]);
+  for (let j = 0; j <= len; j++) {
+    const x = Math.round(bx + dx * j), y = Math.round(by + dy * j);
+    pxd(x, y, j < 2 ? c2 : c1); if (j < len * 0.45) pxd(x, y + 1, c2);
+  }
+}
+function turtle() {
+  const t = gT - 7; if (t < 0) return;
+  const s = F / 11, cx = VPX + (-21 + 1.6 * t - CAMS[0]) * s, cy = HZC + (CAMH - 6.9 - 0.3 * Math.sin(TAU * 3 * gT / LOOP)) * s;
+  if (cx < -30 || cx > W + 30) return;
+  DZ[0] = 11; DB[0] = 0;
+  const x0 = Math.round(cx), y0 = Math.round(cy), L = 1.15 * s, hl = L / 2, st = Math.floor(frame / 20) & 3;   // 4 poses on the 12 fps grid
+  FLR[0] = x0 + Math.round(L * 0.18); FLR[1] = y0 + 1; FLR[2] = L * 0.5; FLR[3] = TFB[st]; flipper(TU1, K1);   // far front flipper, in shadow
+  for (let x = Math.floor(-hl); x <= Math.ceil(hl); x++) {                                   // carapace (domed) over the pale plastron
+    const u = (x + 0.5) / hl; if (Math.abs(u) >= 1) continue;
+    const top = y0 - Math.round(0.3 * L * Math.pow(1 - u * u, 0.6) * (u > 0 ? 1 : 0.9)), bot = y0 + Math.round(0.09 * L * Math.sqrt(1 - u * u));
+    for (let y = top; y <= bot; y++) {
+      let c = y === top ? SUN1 : y < y0 ? ((((x + 40) % 4) === 0 || (y === top + 2 && (x & 1))) ? TU1 : TU0) : y === y0 ? TU1 : SD1;
+      if (y === top && Math.abs(u) > 0.85) c = TU0;
+      pxd(x0 + x, y, c);
+    }
+  }
+  const hx = x0 + Math.round(hl);                                                            // head with a beak, an eye
+  pxd(hx, y0, KP1); pxd(hx + 1, y0, KP1); pxd(hx + 1, y0 - 1, KP0); pxd(hx + 2, y0 - 1, ST1); pxd(hx + 2, y0, ST2); pxd(hx + 3, y0, ST2); pxd(hx + 2, y0 - 1, K1);
+  pxd(hx - 1, y0 - 1, ST1);
+  FLR[0] = x0 + Math.round(L * 0.22); FLR[1] = y0 + 1; FLR[2] = L * 0.6; FLR[3] = TFA[st]; flipper(KP1, TU1);                       // near front flipper, sweeping
+  FLR[0] = x0 - Math.round(hl * 0.75); FLR[1] = y0 + 1; FLR[2] = L * 0.2; FLR[3] = TFA[(st + 2) & 3] * 0.6 + 0.3; flipper(KP1, TU1);  // rear flipper
+}
+
+// ---------- the jellyfish: two purple practicals drifting near the stone, pulsing (emissive, drawn after lighting) ----------
+const JN = 2, JX0 = new Float32Array([-7.0, 6.4]), JH0 = new Float32Array([6.1, 12.0]), JZ = new Float32Array([19, 31.5]), JR = new Float32Array([0.46, 0.5]);
+const JSX = new Float32Array(JN), JSY = new Float32Array(JN), JPU = new Float32Array(JN);   // this frame: screen centre, pulse
+function jellyPlace() {
+  const cam = CAMS[0];
+  for (let j = 0; j < JN; j++) {
+    const s = F / JZ[j];
+    JSX[j] = VPX + (JX0[j] + 0.35 * Math.sin(TAU * gT / LOOP + j * 2) - cam) * s;
+    JSY[j] = HZC + (CAMH - JH0[j] - 0.45 * Math.sin(TAU * 2 * gT / LOOP + 1 + j)) * s;
+    JPU[j] = 0.5 + 0.5 * Math.sin(TAU * 16 * gT / LOOP + j * 1.9);
+  }
+}
+function jellyDraw(j) {
+  const s = F / JZ[j], cx = JSX[j], cy = JSY[j], p = JPU[j]; if (cx < -20 || cx > W + 20) return;
+  DZ[0] = JZ[j]; DB[0] = 0;
+  const bw = JR[j] * s * (1.05 - 0.22 * p), bh = JR[j] * s * (0.62 + 0.3 * p), x0 = Math.round(cx), y0 = Math.round(cy);
+  for (let y = Math.floor(-bh); y <= 1; y++) for (let x = Math.floor(-bw); x <= Math.ceil(bw); x++) {
+    const u = (x + 0.5) / bw, v = (y + 0.5) / bh; if (u * u + v * v > 1 && y < 1) continue; if (y === 1 && Math.abs(u) > 0.8) continue;
+    pxd(x0 + x, y0 + y, v < -0.55 && Math.abs(u) < 0.5 ? JP0 : y >= 0 ? JP2 : JP1);
+  }
+  const tl = Math.round(2.3 * s * (0.85 + 0.15 * p)), n = Math.max(3, Math.round(bw * 0.9)), w0 = TAU * 12 * gT / LOOP + j;
+  for (let k = 0; k < n; k++) {
+    const bx = x0 + Math.round((k / (n - 1) - 0.5) * bw * 1.6 * (1 - 0.3 * p));
+    for (let l = 2; l < tl * (0.6 + 0.4 * hash(k * 7 + j)); l++) { if (!(l & 1) && k !== (n >> 1)) continue; pxd(bx + Math.round(1.2 * Math.sin(l * 0.3 + w0 + k)), y0 + l, l < tl * 0.35 ? JP1 : JP2); }
+  }
+  pxd(x0, y0 + 2, JP1); pxd(x0 - 1, y0 + 3, JP1); pxd(x0 + 1, y0 + 4, JP1);                // oral arms
+}
+
+// ---------- the moray: head and neck out of its hole, drifting in and out, mouth breathing ----------
+function moray() {
+  const s = F / BOM_Z, hx = VPX + (MORAY_X - CAMS[0]) * s, hy = HZC + (CAMH - MORAY_H) * s; if (hx < -40 || hx > W + 40) return;
+  DZ[0] = BOM_Z - 0.05; DB[0] = 0;
+  const e = 0.55 + 0.45 * Math.sin(TAU * 2 * gT / LOOP + 0.6), open = Math.sin(TAU * 10 * gT / LOOP) > 0.2;
+  const L = Math.round((0.1 + 0.26 * e) * s), th = Math.max(4, Math.round(0.14 * s));
+  for (let k = 0; k <= L; k++) {                                     // the neck, arching a little as it leaves the hole
+    const x = Math.round(hx - k), yc = hy - 1.2 * Math.sin(k / Math.max(1, L) * Math.PI);
+    for (let q = 0; q < th; q++) { const y = Math.round(yc - th / 2 + q); pxd(x, y, q === 0 ? KP0 : q === th - 1 ? KP2 : ((x * 3 + q * 5) % 7 === 0 ? KP2 : KP1)); }
+  }
+  const sn = Math.round(0.24 * s), ex = Math.round(hx - L - 1), ey = Math.round(hy);            // the head: a tapering snout, jaws
+  for (let k = 0; k < sn; k++) {
+    const tp = th * (1 - (k / sn) * 0.5), x = ex - k, top = Math.round(ey - tp / 2), bot = Math.round(ey + tp / 2) + (open && k > 1 ? 1 : 0);
+    for (let y = top; y <= bot; y++) pxd(x, y, y === top ? KP0 : open && k > 1 && y === bot - 1 ? CR2 : y === bot ? KP2 : KP1);
+  }
+  pxd(ex - 1, Math.round(ey - th / 2) + 1, K0); pxd(ex, Math.round(ey - th / 2) + 1, SUN0);   // the eye and its glint
+}
+
+// ---------- the giant clam: snaps shut twice per loop and breathes out a burst of bubbles ----------
+const CLAM_X = -14.5, CLAM_Z = 14, CLAM_T0 = 3.2;
+function clamPhase() { let tau = (gT - CLAM_T0) % (LOOP / 2); if (tau < 0) tau += LOOP / 2; return tau; }
+function clamGape() { const tau = clamPhase(); return tau < 0.3 ? 1 - tau / 0.3 : tau < 1.2 ? 0 : tau < 4.2 ? easeSine((tau - 1.2) / 3) : 1; }
+function clam() {
+  const s = F / CLAM_Z, cx = VPX + (CLAM_X - CAMS[0]) * s, by = HZC + CAMH * s; if (cx < -16 || cx > W + 16) return;
+  DZ[0] = CLAM_Z; DB[0] = 0;
+  const g = clamGape(), hw = 0.45 * s, x0 = Math.round(cx), y0 = Math.round(by) - 1, lip = Math.round(0.24 * s), gap = Math.round(g * 0.1 * s + 0.4);
+  for (let x = Math.round(-hw); x <= Math.round(hw); x++) {
+    const u = x / hw, hLow = Math.round(lip * Math.sqrt(Math.max(0, 1 - u * u)));
+    for (let y = 0; y < hLow; y++) pxd(x0 + x, y0 - y, (x & 1) ? ST2 : ST1);                   // lower valve, ribbed
+    for (let y = 0; y < gap; y++) pxd(x0 + x, y0 - hLow - y, ((x + y * 2) % 4 === 0) ? TL0 : ((x + 7) % 5 === 0 ? MG0 : BL0));   // the mantle
+    const hUp = Math.round(hLow * 0.6) + 1;
+    for (let y = 0; y < hUp; y++) pxd(x0 + x, y0 - hLow - gap - y, y === hUp - 1 ? ST0 : ((x & 1) ? ST1 : ST0));   // upper valve, sunlit
+  }
+}
+
+// ---------- bubbles (EFFECT_1): pooled, world space; rise, wobble, speed up a little; the ring allocator never allocates ----------
+const BN = 256, BXw = new Float32Array(BN), BHw = new Float32Array(BN), BZw = new Float32Array(BN), BV = new Float32Array(BN), BPH = new Float32Array(BN), BS = new Uint8Array(BN), BA = new Uint8Array(BN);
+const EB = new Float64Array(5);                                   // emitter registers: X, h, Z, speed, wobble phase
+let bHead = 0;
+function emitBubble(size) { const i = bHead; bHead = (bHead + 1) % BN; BXw[i] = EB[0]; BHw[i] = EB[1]; BZw[i] = EB[2]; BS[i] = size; BV[i] = EB[3]; BPH[i] = EB[4]; BA[i] = 1; }
+function stepBubbles() {
+  for (let i = 0; i < BN; i++) {
+    if (!BA[i]) continue;
+    BHw[i] += BV[i] * STEP; BV[i] = Math.min(BV[i] + 0.22 * STEP, 1.1 + BS[i] * 0.25);
+    if (BHw[i] > 17 || HZC + (CAMH - BHw[i]) * F / BZw[i] < -4) BA[i] = 0;
+  }
+}
+function bubbleEmitters() {
+  const f = frame, tau = clamPhase();
+  if (tau > 0.22 && tau < 0.85 && (f & 1) === 0) { const hh = hash(f * 7 + 3); EB[0] = CLAM_X - 0.25 + hh * 0.5; EB[1] = 0.3; EB[2] = CLAM_Z; EB[3] = 0.5 + hh * 0.5; EB[4] = hh * 9; emitBubble(hh < 0.25 ? 3 : hh < 0.6 ? 2 : 1); }
+  if ((f % 19) === 0) { const hh = hash(f * 13 + 1); EB[0] = 1.15 + hh * 0.12; EB[1] = 1.0; EB[2] = 30.2; EB[3] = 0.35 + hh * 0.25; EB[4] = hh * 9; emitBubble(hh < 0.3 ? 2 : 1); }
+  if ((f % 76) === 0 || (f % 76) === 9) { const hh = hash(f * 3 + 5); EB[0] = MORAY_X - 0.2; EB[1] = MORAY_H + 0.1; EB[2] = BOM_Z - 0.2; EB[3] = 0.45; EB[4] = hh * 9; emitBubble(hh < 0.5 ? 2 : 1); }
+  if ((f % 64) === 0) { EB[0] = 11.2; EB[1] = 0.05; EB[2] = 16; EB[3] = 0.4; EB[4] = 1.3; emitBubble(2); }
+  if ((f % 38) === 0) { EB[0] = -17.2; EB[1] = 0.05; EB[2] = 22.5; EB[3] = 0.45; EB[4] = 2.1; emitBubble(1); }
+}
+
+// ==========================================================================
+// LIGHT (the doorway, the jellies, the sun's rays), MARINE SNOW, the FOREGROUND band, the FADE; update / render / bake
+// Per-frame values live in typed-array registers (CAMS, PL, HL, DH, FLK): passing freshly computed floats to helpers
+// would box them on every call, and the loop must not allocate.
+// ==========================================================================
+const LITM = new Uint8Array(W * H), LV = new Uint8Array(W * H);
+const CAMS = new Float64Array(1), FLK = new Float64Array([1]), DH = new Float64Array(2);        // camera X, candle level, door centre
+const PL = new Float64Array(6), HL = new Float64Array(6);                                        // pool / halo registers
+let PIXEL_ONLY = false;
+CAMS[0] = CAMX0;
+function hdLit() { return !PIXEL_ONLY && typeof hdActive === 'function' && hdActive(); }
+function rgbOf(c) { return parseInt(PAL_HEX[c].slice(1), 16); }
+const RGB_DOOR = rgbOf(LB1), RGB_JELLY = rgbOf(JP1), RGB_SUN = rgbOf(SUN1);
+
+// ---------- practical pools: screen distance plus depth difference; the whole pool takes the light's colour ----------
+// PRACTICAL_STRENGTH subtle: reach <= 36 px, one step, narrow dither. Surfaces whose neighbour toward the light is much
+// farther away are edges facing it: they take a rim in the light's colour. With the HD finish on, the pool goes to the
+// smooth light map instead (written straight into hd.js's HD_LM).
+// registers PL: light x, light y, light depth, reach (px), strength, depth-to-px
+function pool(lut, rgb) {
+  const lx = PL[0], ly = PL[1], lz = PL[2], R = PL[3], on = PL[4], zk = PL[5];
+  const x0 = Math.max(0, Math.floor(lx - R)), x1 = Math.min(W - 1, Math.ceil(lx + R)), y0 = Math.max(0, Math.floor(ly - R)), y1 = Math.min(H - 1, Math.ceil(ly + R)), R2 = R * R, hd = hdLit();
+  const r = rgb >> 16, g = (rgb >> 8) & 255, b = rgb & 255;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = y * W + x, z = ZD[i]; if (z >= ZWATER || z < 4) continue;
+    const dx = x + 0.5 - lx, dy = y + 0.5 - ly, dz = (z - lz) * zk, d2 = dx * dx + dy * dy + dz * dz; if (d2 >= R2) continue;
+    const f = 1 - Math.sqrt(d2) / R, nx = x + (dx < 0 ? 1 : -1), rim = nx >= 0 && nx < W && ZD[y * W + nx] > z + 1.5 && f > 0.25;
+    if (hd) { const k = f * f * on * 0.5 + (rim ? 0.18 * on : 0), o = i << 2; HD_LM[o] += r * k; HD_LM[o + 1] += g * k; HD_LM[o + 2] += b * k; continue; }
+    const lvl = Math.pow(f, 0.7) * 16 * on;
+    if (rim || lvl > 4.5 + bay(x, y) * 0.5) FB[i] = lut[FB[i]];
+  }
+}
+// light scattered in the water round a source (a solid core, a short dithered edge); only over what lies at or behind it
+// registers HL: centre x, centre y, radius x, radius y, strength, nearest depth it colours
+function halo(lut) {
+  if (hdLit()) return;                                                     // the HD finish glows its emissive pixels instead
+  const cx = HL[0], cy = HL[1], rxv = HL[2], ryv = HL[3], maxL = HL[4], zMin = HL[5];
+  const x0 = Math.max(0, Math.floor(cx - rxv)), x1 = Math.min(W - 1, Math.ceil(cx + rxv)), y0 = Math.max(0, Math.floor(cy - ryv)), y1 = Math.min(H - 1, Math.ceil(cy + ryv));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = y * W + x; if (ZD[i] < zMin) continue;
+    const u = (x + 0.5 - cx) / rxv, v = (y + 0.5 - cy) / ryv, d = u * u + v * v; if (d >= 1) continue;
+    if ((1 - Math.sqrt(d)) * maxL > 3 + bay(x, y) * 0.55) FB[i] = lut[FB[i]];
+  }
+}
+// FLICKER candle: a steady glow with slow swells and a rare gutter (whole cycles per loop; the gutter repeats every 304 steps)
+function candle() { FLK[0] = 0.9 + 0.05 * Math.sin(TAU * 23 * gT / LOOP) + 0.04 * Math.sin(TAU * 41 * gT / LOOP + 1.1) - (hash(((frame >> 2) % 304) * 17 + 3) < 0.07 ? 0.14 : 0); }
+function doorLight() {
+  const cam = CAMS[0], s = F / TZW, fl = FLK[0]; DH[0] = VPX - cam * s; DH[1] = HZC + (CAMH - 4.9) * s;
+  PL[0] = DH[0]; PL[1] = HZC + (CAMH - 4.6) * F / 38.6; PL[2] = 38.6; PL[3] = 36; PL[4] = fl; PL[5] = s; pool(L_DOOR, RGB_DOOR);
+  HL[0] = DH[0]; HL[1] = DH[1] + 2; HL[2] = 21; HL[3] = 17; HL[4] = 10 * fl; HL[5] = 33; halo(L_DOOR);
+  // the doorway and its glyphs gutter with the candle: dim one step on the low moments
+  if (fl < 0.82) {
+    const ox = Math.round(VPX + (SPX[DOOR_I] - cam) * s - SPAX[DOOR_I]), oy = SPY0[DOOR_I];
+    for (let y = oy + DOOR_Y0 - 5; y < oy + DOOR_Y1; y++) for (let x = ox + DOOR_X0 - 4; x < ox + DOOR_X1 + 4; x++) {
+      if (x < 0 || x >= W || y < 0 || y >= H) continue; const i = y * W + x; if (ZD[i] === TZW) FB[i] = DIM[FB[i]];
+    }
+  }
+}
+function jellyLight() {
+  for (let j = 0; j < JN; j++) {
+    const s = F / JZ[j], on = 0.8 + 0.2 * JPU[j];
+    PL[0] = JSX[j]; PL[1] = JSY[j]; PL[2] = JZ[j]; PL[3] = Math.min(26, 2.4 * s); PL[4] = on; PL[5] = s; pool(L_JELLY, RGB_JELLY);
+    HL[0] = JSX[j]; HL[1] = JSY[j] + 1; HL[2] = 10; HL[3] = 9; HL[4] = 9 * on; HL[5] = JZ[j] - 1; halo(L_JELLY);
+  }
+}
+// ---------- the sun's rays: parallel in the water, so on screen they fan from the sun's fixed point above the frame;
+// their feet lie ~30 m out, so they pivot with the camera. Accumulated per pixel, applied once, only behind 22 m.
+const RAYN = 7, RAYX = new Float32Array([-14, -8.5, -4, 0.5, 4.5, 9, 14.5]), RAYW = new Float32Array([4, 7, 5, 8, 5, 7, 4]), RAYS = new Float32Array([0.7, 1, 0.8, 1, 0.85, 1, 0.7]);
+const SUNX = VPX, SUNY = -130, RAYZ = 30;
+function rays() {
+  const cam = CAMS[0], hd = hdLit(), R = RGB_SUN >> 16, G = (RGB_SUN >> 8) & 255, B = RGB_SUN & 255;
+  for (let r = 0; r < RAYN; r++) {
+    const xb = VPX + (RAYX[r] - cam) * F / RAYZ + 3 * Math.sin(TAU * 3 * gT / LOOP + r * 1.7), st = RAYS[r] * (0.75 + 0.25 * Math.sin(TAU * 4 * gT / LOOP + r * 2.3)) * 10;
+    for (let y = 0; y < 150; y++) {
+      const t = (y - SUNY) / (180 - SUNY), cx = SUNX + (xb - SUNX) * t, hw = RAYW[r] * (0.45 + 0.9 * t), fy = y < 118 ? 1 : (150 - y) / 32, lv = st * fy;
+      const x0 = Math.max(0, Math.floor(cx - hw)), x1 = Math.min(W - 1, Math.ceil(cx + hw));
+      for (let x = x0; x <= x1; x++) { const l = lv * (1 - Math.abs(x + 0.5 - cx) / hw), i = y * W + x; if (l > LV[i]) LV[i] = l; }
+    }
+  }
+  for (let y = 0; y < 150; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, l = LV[i]; if (!l) continue;
+    LV[i] = 0; if (ZD[i] < 22) continue;
+    if (l > 5) LITM[i] = 1;
+    if (hd) { const k = l * 0.009, o = i << 2; HD_LM[o] += R * k; HD_LM[o + 1] += G * k; HD_LM[o + 2] += B * k; continue; }
+    // SHAFTS subtle: in open water the shaft dithers across its width (DITHER strong); on stone and sand only its
+    // middle is dithered, so a lit band reads as light rather than as speckle
+    if (ZD[i] >= ZWATER ? l > bay(x, y) : l > 5.5 + bay(x, y) * 0.4) FB[i] = LIGHT[FB[i]];
+  }
+}
+// ---------- marine snow: pure functions of loop time; parallax by depth; glints in the rays, takes the practicals' colours ----------
+const SNN = 150, SNZ = new Float32Array(SNN), SNX = new Float32Array(SNN), SNY = new Float32Array(SNN), SNV = new Uint8Array(SNN);
+for (let k = 0; k < SNN; k++) { SNZ[k] = 4.5 + 40 * Math.pow(hash(k * 5 + 1), 1.5); SNX[k] = hash(k * 5 + 2) * (W + 6); SNY[k] = hash(k * 5 + 3) * (H + 4); SNV[k] = SNZ[k] < 14 ? 1 : 0; }
+function moteColour(i, x, y, base) {
+  if (LITM[i]) return SUN0;
+  const dx = (x - DH[0]) / 22, dy = (y - DH[1]) / 18; if (dx * dx + dy * dy < 1) return LB1;
+  for (let j = 0; j < JN; j++) { const ex = x - JSX[j], ey = y - JSY[j]; if (ex * ex + ey * ey < 80) return JP1; }
+  return base;
+}
+function snow() {
+  const cam = CAMS[0];
+  for (let k = 0; k < SNN; k++) {
+    const z = SNZ[k], s = F / z;
+    let x = SNX[k] - (cam - CAMX0) * s + 3 * Math.sin(TAU * 3 * gT / LOOP + k); x = ((x % (W + 6)) + (W + 6)) % (W + 6) - 3;
+    let y = SNY[k] + (H + 4) * SNV[k] * gT / LOOP + 2 * Math.sin(TAU * 2 * gT / LOOP + k * 1.3); y = (y % (H + 4)) - 2;
+    const X = Math.round(x), Y = Math.round(y); if (X < 0 || X >= W - 1 || Y < 0 || Y >= H) continue;
+    const i = Y * W + X; if (ZD[i] <= z) continue;
+    const c = moteColour(i, X, Y, LIGHT[FB[i]]);
+    FB[i] = c; BLC[i] = 0;
+    if (z < 7.5 && ZD[i + 1] > z) FB[i + 1] = LIGHT[FB[i + 1]];
+  }
+}
+function drawBubbles() {
+  const cam = CAMS[0];
+  for (let q = 0; q < BN; q++) {
+    if (!BA[q]) continue;
+    const z = BZw[q], s = F / z, x = Math.round(VPX + (BXw[q] + 0.07 * Math.sin(BHw[q] * 3.3 + BPH[q]) - cam) * s), y = Math.round(HZC + (CAMH - BHw[q]) * s);
+    if (x < 1 || x >= W - 3 || y < 1 || y >= H - 3) continue;
+    const i = y * W + x; if (ZD[i] <= z) continue;
+    const hi = moteColour(i, x, y, SUN0); BLC[i] = 0;
+    if (BS[q] === 1) FB[i] = hi === SUN0 ? LIGHT[LIGHT[FB[i]]] : hi;
+    else if (BS[q] === 2) { FB[i] = hi; FB[i + 1] = LIGHT[FB[i + 1]]; FB[i + W] = LIGHT[FB[i + W]]; }
+    else { FB[i] = hi; FB[i + 1] = LIGHT[FB[i + 1]]; FB[i - W] = LIGHT[FB[i - W]]; FB[i - W + 1] = LIGHT[FB[i - W + 1]]; FB[i + W] = LIGHT[FB[i + W]]; FB[i + 2] = LIGHT[FB[i + 2]]; FB[i + W + 1] = LIGHT[FB[i + W + 1]]; }
+  }
+}
+
+// ---------- foreground (z 4.5): near-black coral and rock along the bottom, a dithered fringe only in concavities,
+// the sun's bounce on the top edges; tall fans and grass sway ----------
+const Z_FG = 4.5, FGW = W + Math.ceil((CAMX1 - CAMX0) * F / Z_FG) + 4, FGB = new Uint8Array(FGW * H);
+function bakeFG() {
+  FGB.fill(CLEAR); target(FGB, FGW, H, 0, 0);
+  const e0 = Math.round((CAMX1 - CAMX0) * F / Z_FG);                           // band x of the held shot's left edge
+  for (let x = 0; x < FGW; x++) {                                              // the rock band: low in the middle of each shot, high at its corners
+    const a = x < e0 * 0.6 ? x : x - e0, cr = Math.max(0, 1 - Math.min(Math.abs(a - 8), Math.abs(a - 318)) / 70);
+    const hgt = 3 + 19 * cr * cr + 5 * vn(x * 0.05, 301) + 3 * vn(x * 0.21, 302);
+    for (let y = Math.round(H - hgt); y < H; y++) px(x, y, 1);
+  }
+  const lump = (cx, w, h, seed) => { for (let x = Math.round(cx - w); x <= Math.round(cx + w); x++) { const u = (x - cx) / w, t = Math.round(H - h * Math.sqrt(Math.max(0, 1 - u * u)) * (0.8 + 0.3 * vn(x * 0.2, seed))); for (let y = t; y < H; y++) px(x, y, 1); } };
+  lump(40, 34, 20, 311); lump(196, 30, 11, 312); lump(e0 + 20, 40, 24, 313); lump(e0 + 300, 36, 25, 314); lump(e0 - 70, 26, 13, 315);
+  // silhouettes: branching coral with thick fingers, fans (solid, a few holes), seagrass
+  const stag = [12, 70, e0 + 12, e0 + 296, e0 - 64, 250];
+  for (let k = 0; k < stag.length; k++) staghornSil(stag[k], H - 14 - (k % 2) * 5, 20 + (k % 3) * 7, 340 + k);
+  const fans = [44, e0 + 44, e0 + 270];
+  for (let k = 0; k < fans.length; k++) fanSil(fans[k], H - 16, 30 + k * 4, 34 + k * 4, 320 + k);
+  for (let k = 0; k < 46; k++) { const bx = h2(k, 1, 330) * FGW, L = 5 + h2(k, 2, 330) * 13, by = H - 5; for (let j = 0; j < L; j++) px(Math.round(bx + (h2(k, 3, 330) - 0.4) * j * j / L * 0.7), by - j, 1); }
+  kFgSoften(FGB, FGW, H, H - 60);
+}
+function staghornSil(cx, by, h, seed) {
+  const n = 4 + Math.floor(h2(1, 1, seed) * 3);
+  for (let k = 0; k < n; k++) {
+    const a = -Math.PI / 2 + (k / (n - 1) - 0.5) * 1.5 + (h2(k, 2, seed) - 0.5) * 0.3, L = h * (0.6 + 0.4 * h2(k, 3, seed));
+    for (let j = 0; j < L; j++) {
+      const x = Math.round(cx + Math.cos(a) * j), y = Math.round(by + Math.sin(a) * j), th = j < L * 0.6 ? 3 : 2;
+      rect(x - 1, y - 1, th, th, 1);
+      if (j > L * 0.4 && h2(j, k, seed) < 0.12) { const s = h2(j, k + 5, seed) < 0.5 ? -1 : 1; for (let q = 1; q < 5; q++) rect(x + s * q, y - q, 2, 2, 1); }
+    }
+  }
+}
+function fanSil(cx, by, h, w, seed) {
+  for (let y = by - 6; y <= by; y++) rect(cx - 1, y, 2, 1, 1);
+  const ty = by - 5;
+  for (let y = ty - h; y <= ty; y++) for (let x = cx - w / 2; x <= cx + w / 2; x++) {
+    const dx = (x - cx) / (w / 2) * h, dy = ty - y, r = Math.sqrt(dx * dx + dy * dy), a = Math.atan2(dx, dy + 0.01);
+    if (Math.abs(a) > 1.3 || r > h * (0.8 + 0.2 * vn(a * 3, seed))) continue;
+    if (r > 5 && r < h * 0.7 && vn2(x * 0.4, y * 0.4, seed) < 0.3) continue;                    // a few holes in the net
+    px(Math.round(x), y, 1);
+  }
+}
+function drawFG() {
+  const ox = Math.round((CAMS[0] - CAMX0) * F / Z_FG), w0 = TAU * 5 * gT / LOOP;
+  for (let y = H - 64; y < H; y++) {
+    const sw = y < H - 14 ? Math.round(2.2 * Math.pow((H - 14 - y) / 50, 1.2) * Math.sin(w0 - y * 0.05)) : 0, row = y * FGW + ox - sw, d = y * W;
+    for (let x = 0; x < W; x++) {
+      const bx = row + x; if (bx < y * FGW || bx >= (y + 1) * FGW) continue;
+      const v = FGB[bx]; if (v === CLEAR) continue;
+      const i = d + x;
+      if (v === 1) FB[i] = K1; else if (v === 2) { if ((x + y) & 1) FB[i] = K1; else continue; } else FB[i] = bay(x, y) < 8 ? TU1 : K1;
+      ZD[i] = Z_FG; BLC[i] = 4;
+    }
+  }
+}
+function fade(level) {
+  if (level <= 0) return;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (level > bay(x, y)) FB[y * W + x] = K0;
+}
+
+// ---------- update / render / bake ----------
+function camTo(t) {                                                         // camAt, written straight into its register
+  CAMS[0] = t < T_OPEN || t >= T_CUT ? CAMX0 : t < T_REV ? CAMX0 + (CAMX1 - CAMX0) * easeSine((t - T_OPEN) / (T_REV - T_OPEN)) : CAMX1;
+}
+function update() { camTo(gT); bubbleEmitters(); stepBubbles(); }
+function render() {
+  if (!uiDone) addPixelExport();
+  FB.set(BG); ZD.fill(ZWATER); BLC.fill(1); LITM.fill(0);
+  causticPhase(); candle(); jellyPlace();
+  surfaceShimmer();
+  drawGround(); groundCaustics();
+  drawFar(0); drawFar(1); drawFar(2);
+  for (let k = 0; k < SN; k++) drawSprite(SPORD[k]);
+  for (let k = 0; k < KN; k++) kelpDraw(k);
+  clam(); moray(); reefFish(); school(); turtle();
+  doorLight(); jellyLight();
+  rays();
+  for (let j = 0; j < JN; j++) jellyDraw(j);
+  drawBubbles(); snow();
+  drawFG();
+  if (!hdLit()) applyVignette(SHADE);
+  fade(fadeAt(gT));
+  if (typeof hdFocusMap === 'function' && hdLit()) hdFocusMap();
+}
+function drawSprite(i) {
+  const z = SPZ[i], s = F / z, ox = Math.round(VPX + (SPX[i] - CAMS[0]) * s - SPAX[i]), w = SPW[i], h = SPH[i];
+  if (ox >= W + 3 || ox + w <= -3) return;
+  const buf = SPB[i], upm = SPU[i], oy = SPY0[i], amp = SPA[i], bl = SPBL[i], caus = z < 36;
+  const du = CU / s, u0 = (SPX[i] - SPAX[i] / s) * CU, vz = Math.floor(z * 3), w0 = TAU * SPK[i] * gT / LOOP + SPP[i], piv = SPR[i];
+  for (let r = 0; r < h; r++) {
+    const y = oy + r; if (y < 0 || y >= H) continue;
+    let sh = 0; if (amp > 0 && r < piv) { const f = (piv - r) / piv; sh = Math.round(amp * f * f * Math.sin(w0 - r * 0.07)); }
+    const row = r * w, d = y * W, x0 = ox + sh;
+    for (let c = 0; c < w; c++) {
+      const v = buf[row + c]; if (v === CLEAR) continue;
+      const x = x0 + c; if (x < 0 || x >= W) continue;
+      const k = d + x; let col = v;
+      if (caus && upm[row + c] && causticAt(Math.floor(u0 + c * du), vz + (r >> 1)) * 2 > bay(x, y)) col = LIGHT[col];
+      FB[k] = col; ZD[k] = z; BLC[k] = bl;
+    }
+  }
+}
+function sortSprites() {
+  for (let i = 0; i < SN; i++) SPORD[i] = i;
+  for (let i = 1; i < SN; i++) { const v = SPORD[i]; let j = i - 1; while (j >= 0 && (SPZ[SPORD[j]] < SPZ[v] || (SPZ[SPORD[j]] === SPZ[v] && SPORD[j] > v))) { SPORD[j + 1] = SPORD[j]; j--; } SPORD[j + 1] = v; }
+}
+function bake() {
+  bakeCaustics(); bakeWater(); bakeFar();
+  bakeTemple(); bakeAvenue(); bakeReef(); bakeKelp();
+  contact(CLAM_X, CLAM_Z, 0.55, 0.4, 1.3);
+  bakeGround();
+  for (let k = 0; k < SHD.length; k += 5) groundShadow(SHD[k], SHD[k + 1], SHD[k + 2], SHD[k + 3], SHD[k + 4]);
+  sortSprites(); bakeFG(); buildVignette(2);
+  target(FB, W, H, 0, 0);
+}
+// EXPORT png-1x (loop mode): a frame grab of the pixel frame at 1x (button or P), with its dithered pools even in HD
+let uiDone = false;
+function grabPixel() { PIXEL_ONLY = true; render(); present(); savePNG(1); PIXEL_ONLY = false; render(); present(); }
+function addPixelExport() {
+  uiDone = true;
+  if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function' || /clean/.test(location.hash)) return;
+  try { if (window.self !== window.top) return; } catch (e) { return; }    // embedded (a gallery player): downloads are blocked there
+  const bar = document.createElement('div'); bar.id = 'export'; bar.style.right = 'auto'; bar.style.left = '10px';
+  const b = document.createElement('button'); b.textContent = 'Pixel PNG 1×'; b.onclick = grabPixel;
+  bar.appendChild(b); document.body.appendChild(bar);
+  window.addEventListener('keydown', (e) => { if (e.code === 'KeyP') grabPixel(); });
+}
+
+// ---------- HD finish settings (core/hd.js, FINISH = hd at 1080p): what glows, the de-dither, and the focus map ----------
+// Glow: the jellies and the doorway (their 4-step ramps), a faint sparkle on caustic peaks and glints, the surface's glow.
+const HD_EMIT = [[JP0, 1], [JP1, 0.75], [JP2, 0.25], [LB0, 1], [LB1, 0.8], [LB2, 0.3], [SUN0, 0.14], [WA6, 0.1]];
+// HD_SMOOTH: the edge-preserving de-dither blended over the crisp pixels. 0.72 is the middle ground accepted for Sundown
+// Mine: DITHER strong melts into clean gradients in the HD output while edges, coral and stone detail stay defined.
+const HD_GLOW = 0.95, HD_SMOOTH = 0.72;
+// FOCUS foreground-soft: hd.js reads HD_DEPTH through its depth-of-field control, so it carries a blur amount per pixel:
+// the near-black coral band soft, the corner kelp half soft, the water column lightly smoothed; the reef, the temple and
+// the far ruins stay sharp. Every change of focus is feathered over a few pixels so no stair shows in the blend.
+const HD_DEPTH = new Float32Array(W * H), HD_DOF_NEAR = 0, HD_DOF_FAR = 1, HD_DOF_DEEP = true;
+const BLURV = new Float32Array([0, 0.4, 0.05, 0.42, 0.85]);       // by blur class: sharp, water, far, near-soft, foreground
+const HD_FT = new Float32Array(W * H);
+function hdFocusMap() {
+  const D = HD_DEPTH, T = HD_FT;
+  for (let i = 0; i < W * H; i++) D[i] = BLURV[BLC[i]];
+  for (let pass = 0; pass < 2; pass++) {                          // 3x3 box, twice
+    for (let y = 0; y < H; y++) { const o = y * W; for (let x = 0; x < W; x++) T[o + x] = (D[o + Math.max(x - 1, 0)] + D[o + x] + D[o + Math.min(x + 1, W - 1)]) / 3; }
+    for (let y = 0; y < H; y++) { const o = y * W, u = Math.max(y - 1, 0) * W, d = Math.min(y + 1, H - 1) * W; for (let x = 0; x < W; x++) D[o + x] = (T[u + x] + T[o + x] + T[d + x]) / 3; }
+  }
+  hdDofDirty = true;
+}
+// #clean in the address hides the button bars (for clean screenshots), e.g. underwater-temple.html#t=16&clean
+if (typeof location !== 'undefined' && typeof document !== 'undefined' && document.getElementById && /clean/.test(location.hash)) setTimeout(() => {
+  if (typeof hdUI !== 'undefined' && hdUI && hdUI.png) hdUI.png.parentNode.style.display = 'none';
+  const e = document.getElementById('export'); if (e) e.style.display = 'none';
+}, 0);
+
+// ==========================================================================
+// HD FINISH (FINISH = hd) - an optional output stage. The pixel-art frame stays the base layer, crisp and exact
+// (an integer multiple of the logical resolution). On top of it, at 1080p or 4K, in WebGL2:
+//   glow     : the emissive palette colours (HD_EMIT) blurred at four scales: a tight neon halo plus a wide,
+//              faint scatter that reads as light in the air
+//   depth    : optional depth of field from a per-pixel depth buffer (HD_DEPTH), softening the far distance
+//   grade    : a soft shoulder for the glow, a slight cool-shadow / warm-highlight split, a smooth vignette,
+//              a faint lens fringe toward the corners and fine animated film grain
+// Controls: H toggles the finish, R switches 1080p / 4K; buttons export a PNG at the output size and record one
+// exact loop as WebM. Include after the scene chunks and before core_b. Falls back to the pixel output without WebGL2.
+// Scene inputs: HD_EMIT (array of [palette index, strength 0..1]); optional HD_DEPTH (Float32Array W*H),
+// HD_DOF_NEAR / HD_DOF_FAR (depths where the blur starts / is full), HD_GLOW (overall glow strength, default 1),
+// HD_DOF_DEEP (true: a two-stage focus for strong out-of-focus foregrounds; the first half of the range blends to a soft
+// copy, the second half on to a much softer one. Off by default, so existing scenes render exactly as before),
+// HD_SMOOTH (0..1: an edge-preserving de-dither of the frame, upscaled smoothly (Catmull-Rom), blended over the crisp
+// pixels by this amount. Absent = 0, the crisp pixel base as before).
+// ==========================================================================
+let GL = null, HDC = null, hdOn = true, hdRes = 1080, hdFrame = 0, hdProg = null, hdTex = null, hdFbo = null, hdVao = null;
+const HD_EM32 = new Uint32Array(W * H), HD_EM8 = new Uint8Array(HD_EM32.buffer), HD_EMLUT = new Uint32Array(256), HD_DOFB = new Uint8Array(W * H);
+// Light map: while the finish is on, a scene can hand its light pools over as smooth light instead of dithered
+// remaps (hdActive() tells it when). The compositor lights the crisp pixel texture with it at the output resolution.
+const HD_LM = new Uint8ClampedArray(W * H * 4);
+function hdActive() { return GL !== null && hdOn; }
+function hdLight(i, r, g, b, k) { const o = i << 2; HD_LM[o] += r * k; HD_LM[o + 1] += g * k; HD_LM[o + 2] += b * k; }
+let hdDofDirty = true, hdRec = null, hdRecState = 0, hdRecChunks = [], hdUI = null;
+const HD_LV = [[W >> 1, H >> 1], [W >> 2, H >> 2], [W >> 3, (H >> 3) + 1], [W >> 4, (H >> 4) + 1]];
+function hdShader(type, src) { const s = GL.createShader(type); GL.shaderSource(s, src); GL.compileShader(s); if (!GL.getShaderParameter(s, GL.COMPILE_STATUS)) throw new Error(GL.getShaderInfoLog(s)); return s; }
+function hdProgram(fs) {
+  const vs = '#version 300 es\nout vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2)*2.0-1.0;uv=p*0.5+0.5;gl_Position=vec4(p,0,1);}';
+  const p = GL.createProgram(); GL.attachShader(p, hdShader(GL.VERTEX_SHADER, vs)); GL.attachShader(p, hdShader(GL.FRAGMENT_SHADER, '#version 300 es\nprecision highp float;in vec2 uv;out vec4 o;' + fs)); GL.linkProgram(p);
+  if (!GL.getProgramParameter(p, GL.LINK_STATUS)) throw new Error(GL.getProgramInfoLog(p));
+  return p;
+}
+function hdTexture(w, h, fmt, filter) {
+  const t = GL.createTexture(); GL.bindTexture(GL.TEXTURE_2D, t);
+  GL.texImage2D(GL.TEXTURE_2D, 0, fmt === 1 ? GL.R8 : GL.RGBA8, w, h, 0, fmt === 1 ? GL.RED : GL.RGBA, GL.UNSIGNED_BYTE, null);
+  GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MIN_FILTER, filter); GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MAG_FILTER, filter);
+  GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_S, GL.CLAMP_TO_EDGE); GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_T, GL.CLAMP_TO_EDGE);
+  return t;
+}
+function hdTarget(tex) { const f = GL.createFramebuffer(); GL.bindFramebuffer(GL.FRAMEBUFFER, f); GL.framebufferTexture2D(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, tex, 0); return f; }
+function hdInit() {
+  const q = (typeof location !== 'undefined' ? location.search + '&' + location.hash : '');
+  if (/finish=pure/.test(q)) hdOn = false;
+  if (/res=(2160|4k)/i.test(q)) hdRes = 2160;
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return false;
+  HDC = document.createElement('canvas');
+  try { GL = HDC.getContext && HDC.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true }); } catch (e) { GL = null; }
+  if (!GL || typeof GL.createShader !== 'function') { GL = null; return false; }   // no WebGL2 (or a headless stub): pixel output
+  HDC.id = 'hd'; HDC.style.cssText = 'position:fixed;left:0;top:0;';
+  document.body.appendChild(HDC);
+  for (let i = 0; i < 256; i++) HD_EMLUT[i] = 0xff000000;
+  const EM = typeof HD_EMIT !== 'undefined' ? HD_EMIT : [];
+  for (let k = 0; k < EM.length; k++) {
+    const c = PAL32[EM[k][0]], s = EM[k][1];
+    HD_EMLUT[EM[k][0]] = (0xff000000 | (Math.round(((c >> 16) & 255) * s) << 16) | (Math.round(((c >> 8) & 255) * s) << 8) | Math.round((c & 255) * s)) >>> 0;
+  }
+  // programs: 2x2 box down-sample, separable 9-tap gaussian, final composite
+  const pDown = hdProgram('uniform sampler2D s;uniform vec2 t;void main(){o=0.25*(texture(s,uv+t*vec2(-.5,-.5))+texture(s,uv+t*vec2(.5,-.5))+texture(s,uv+t*vec2(-.5,.5))+texture(s,uv+t*vec2(.5,.5)));}');
+  const pBlur = hdProgram('uniform sampler2D s;uniform vec2 d;void main(){vec4 a=texture(s,uv)*.2270;a+=(texture(s,uv+d*1.3846)+texture(s,uv-d*1.3846))*.3162;a+=(texture(s,uv+d*3.2308)+texture(s,uv-d*3.2308))*.0703;o=a;}');
+  // de-dither: a texel that differs from its neighbours on both axes (a dither or noise texel, not a line) takes the
+  // average of the 5x5 neighbours close in colour to the local mean, so patterns melt into smooth tone. One-pixel lines
+  // (log courses, rails) differ on one axis only and stay; very strong single texels (stars, sparks) stay too
+  const pSmooth = hdProgram('uniform sampler2D s;uniform vec2 t;float dd(vec3 a){return dot(a,a);}void main(){vec3 c=texture(s,uv).rgb,l=texture(s,uv-vec2(t.x,0)).rgb,r=texture(s,uv+vec2(t.x,0)).rgb,u=texture(s,uv-vec2(0,t.y)).rgb,d=texture(s,uv+vec2(0,t.y)).rgb;' +
+    'float eh=dd(c-(l+r)*.5),ev=dd(c-(u+d)*.5),k=smoothstep(.0004,.004,min(eh,ev))*(1.-smoothstep(.15,.35,max(eh,ev)));if(k<=0.){o=vec4(c,1);return;}' +
+    'vec3 m=vec3(0),a=vec3(0);float n=0.;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++)m+=texture(s,uv+vec2(x,y)*t).rgb;m/=9.;' +
+    'for(int y=-2;y<=2;y++)for(int x=-2;x<=2;x++){vec3 q=texture(s,uv+vec2(x,y)*t).rgb,e=q-m;float w=exp(-float(x*x+y*y)*.3-dot(e,e)*30.);a+=q*w;n+=w;}o=vec4(mix(c,a/n,k),1);}');
+  const pComp = hdProgram(`
+uniform sampler2D base,emit,l1,l2,l3,l4,d1,dof,lmap,d2,sm;uniform vec2 src,res;uniform float frm,glow,on,deep,smo;
+vec4 bicubic(sampler2D t,vec2 p){vec2 ts=vec2(textureSize(t,0));vec2 q=p*ts-.5;vec2 f=fract(q);vec2 i=floor(q);
+ vec2 w0=(1.-f)*(1.-f)*(1.-f)/6.,w1=(4.-6.*f*f+3.*f*f*f)/6.,w2=(1.+3.*f+3.*f*f-3.*f*f*f)/6.,w3=f*f*f/6.;
+ vec2 g0=w0+w1,g1=w2+w3,h0=(w1/g0-1.+i+.5)/ts,h1=(w3/g1+1.+i+.5)/ts;
+ return g0.y*(g0.x*texture(t,vec2(h0.x,h0.y))+g1.x*texture(t,vec2(h1.x,h0.y)))+g1.y*(g0.x*texture(t,vec2(h0.x,h1.y))+g1.x*texture(t,vec2(h1.x,h1.y)));}
+vec3 soft(vec2 p){vec2 q=p*src-.5,i=floor(q),f=q-i;                     // Catmull-Rom upscale of the de-dithered frame (9 taps)
+ vec2 w0=f*(-.5+f*(1.-.5*f)),w1=1.+f*f*(-2.5+1.5*f),w2=f*(.5+f*(2.-1.5*f)),w3=f*f*(-.5+.5*f),w12=w1+w2;
+ vec2 t0=(i-.5)/src,t3=(i+2.5)/src,t12=(i+.5+w2/w12)/src;
+ return (texture(sm,vec2(t0.x,t0.y)).rgb*w0.x+texture(sm,vec2(t12.x,t0.y)).rgb*w12.x+texture(sm,vec2(t3.x,t0.y)).rgb*w3.x)*w0.y
+  +(texture(sm,vec2(t0.x,t12.y)).rgb*w0.x+texture(sm,vec2(t12.x,t12.y)).rgb*w12.x+texture(sm,vec2(t3.x,t12.y)).rgb*w3.x)*w12.y
+  +(texture(sm,vec2(t0.x,t3.y)).rgb*w0.x+texture(sm,vec2(t12.x,t3.y)).rgb*w12.x+texture(sm,vec2(t3.x,t3.y)).rgb*w3.x)*w3.y;}
+float hash(vec2 p){p=fract(p*vec2(443.897,441.423));p+=dot(p,p.yx+19.19);return fract((p.x+p.y)*p.x);}
+void main(){
+ vec2 fc=gl_FragCoord.xy, p=fc/res; p.y=1.-p.y;              // textures are stored top row first
+ ivec2 tx=ivec2(floor(p*src));
+ vec3 c=texelFetch(base,tx,0).rgb;
+ if(on<.5){o=vec4(c,1);return;}
+ vec2 cc=p-.5; float r2=dot(cc,cc);
+ vec2 ca=cc*r2*1.6/src;                                   // lens fringe: red and blue separate slightly toward the corners
+ c.r=texelFetch(base,ivec2(floor((p+ca)*src)),0).r; c.b=texelFetch(base,ivec2(floor((p-ca)*src)),0).b;
+ if(smo>0.) c=mix(c,vec3(soft(p+ca).r,soft(p).g,soft(p-ca).b),smo);
+ float fd=texture(dof,p).r;                               // depth of field: the far distance softens
+ if(fd>0.){ if(deep>.5){ vec3 b1=bicubic(d1,p).rgb; c = fd<.5 ? mix(c,b1,fd*2.) : mix(b1,bicubic(d2,p).rgb,(fd-.5)*2.); } else c=mix(c,bicubic(d1,p).rgb,fd*.85); }
+ vec3 lm=texture(lmap,p).rgb; float li=clamp(dot(lm,vec3(.33))*2.2,0.,.6);
+ // where light falls strongly, fine dither in the texture is averaged with its neighbours so the wash reads clean,
+ // and the light is mostly additive (multiplying would amplify the dither it lands on)
+ li*=1.-smo;
+ if(li>0.){vec3 nb=(texelFetch(base,tx+ivec2(1,0),0).rgb+texelFetch(base,tx-ivec2(1,0),0).rgb+texelFetch(base,tx+ivec2(0,1),0).rgb+texelFetch(base,tx-ivec2(0,1),0).rgb)*.25;c=mix(c,(c+nb)*.5,li);}
+ float lmx=max(max(lm.r,lm.g),lm.b);                   // lit surfaces take the light's hue at their own brightness (the smooth
+ if(lmx>0.){vec3 hue=lm/lmx;float L=dot(c,vec3(.299,.587,.114));c=mix(c,hue*(L*1.8+.08),clamp(lmx*1.6,0.,.8));}   // form of the pixel colour tables)
+ c=c+c*lm*.8+lm*.45;
+ // (deep focus: the crisp part of the glow fades on the strongly out-of-focus foreground)
+ vec3 g=texture(emit,p).rgb*(deep>.5?.35-.35*smoothstep(.7,1.,fd):.35)+texture(l1,p).rgb*.75+bicubic(l2,p).rgb*.8+bicubic(l3,p).rgb*.7+bicubic(l4,p).rgb*.9;
+ c+=g*glow;
+ c=mix(c,vec3(.75)+(1.-exp(-(c-.75)*4.))*.25,step(.75,c));  // soft shoulder where the glow pushes past white
+ float l=dot(c,vec3(.299,.587,.114));
+ c+=vec3(-.012,-.004,.02)*(1.-smoothstep(0.,.35,l))+vec3(.018,.008,-.012)*smoothstep(.55,1.,l);
+ c*=1.-smoothstep(.18,.62,r2)*.35;                          // smooth vignette
+ c+=(hash(fc+frm*17.13)-.5)*.045;                           // film grain at the output resolution
+ o=vec4(c,1);}`);
+  hdProg = { down: pDown, blur: pBlur, comp: pComp, smooth: pSmooth };
+  // textures: pixel base (nearest), emission, blur levels (+ ping-pong), blurred base for depth of field, depth mask
+  const LIN = GL.LINEAR, NEA = GL.NEAREST;
+  hdTex = { lmap: hdTexture(W, H, 0, LIN), base: hdTexture(W, H, 0, NEA), emit: hdTexture(W, H, 0, LIN), dof: hdTexture(W, H, 1, LIN), lv: [], tmp: [], d1: hdTexture(HD_LV[0][0], HD_LV[0][1], 0, LIN), d1t: hdTexture(HD_LV[0][0], HD_LV[0][1], 0, LIN), d2: hdTexture(HD_LV[1][0], HD_LV[1][1], 0, LIN), d2t: hdTexture(HD_LV[1][0], HD_LV[1][1], 0, LIN), sm: hdTexture(W, H, 0, LIN), smt: hdTexture(W, H, 0, LIN) };
+  hdFbo = { lv: [], tmp: [], d1: hdTarget(hdTex.d1), d1t: hdTarget(hdTex.d1t), d2: hdTarget(hdTex.d2), d2t: hdTarget(hdTex.d2t), sm: hdTarget(hdTex.sm), smt: hdTarget(hdTex.smt) };
+  for (let k = 0; k < 4; k++) { hdTex.lv[k] = hdTexture(HD_LV[k][0], HD_LV[k][1], 0, LIN); hdTex.tmp[k] = hdTexture(HD_LV[k][0], HD_LV[k][1], 0, LIN); hdFbo.lv[k] = hdTarget(hdTex.lv[k]); hdFbo.tmp[k] = hdTarget(hdTex.tmp[k]); }
+  GL.bindFramebuffer(GL.FRAMEBUFFER, null);
+  hdVao = GL.createVertexArray();
+  hdAddUI();
+  window.addEventListener('keydown', (e) => { if (e.code === 'KeyH') { hdOn = !hdOn; hdUpdateUI(); } else if (e.code === 'KeyR') { hdRes = hdRes === 1080 ? 2160 : 1080; hdResize(); hdUpdateUI(); } });
+  return true;
+}
+function hdResize() {
+  const ow = Math.round(W * hdRes / H), oh = hdRes;                  // 320x180 -> 1920x1080 (x6) or 3840x2160 (x12)
+  HDC.width = ow; HDC.height = oh;
+  const s = Math.min(innerWidth / ow, innerHeight / oh), cw = Math.floor(ow * s), ch = Math.floor(oh * s);
+  HDC.style.width = cw + 'px'; HDC.style.height = ch + 'px'; HDC.style.left = Math.floor((innerWidth - cw) / 2) + 'px'; HDC.style.top = Math.floor((innerHeight - ch) / 2) + 'px';
+  const bg = document.getElementById('screen'); if (bg) bg.style.visibility = 'hidden';
+  document.body.style.background = '#000';
+}
+function hdPass(prog, fbo, w, h, tex, u2name, u2x, u2y) {
+  GL.bindFramebuffer(GL.FRAMEBUFFER, fbo); GL.viewport(0, 0, w, h); GL.useProgram(prog);
+  GL.activeTexture(GL.TEXTURE0); GL.bindTexture(GL.TEXTURE_2D, tex); GL.uniform1i(GL.getUniformLocation(prog, 's'), 0);
+  GL.uniform2f(GL.getUniformLocation(prog, u2name), u2x, u2y);
+  GL.drawArrays(GL.TRIANGLES, 0, 3);
+}
+function hdPresent() {
+  GL.bindVertexArray(hdVao);
+  // upload: the palette-expanded frame (core_b's ImageData), its emission, and the depth-of-field mask when it changes
+  for (let i = 0; i < W * H; i++) HD_EM32[i] = HD_EMLUT[FB[i]];
+  GL.bindTexture(GL.TEXTURE_2D, hdTex.base); GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, W, H, GL.RGBA, GL.UNSIGNED_BYTE, img.data);
+  GL.bindTexture(GL.TEXTURE_2D, hdTex.emit); GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, W, H, GL.RGBA, GL.UNSIGNED_BYTE, HD_EM8);
+  GL.bindTexture(GL.TEXTURE_2D, hdTex.lmap); GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, W, H, GL.RGBA, GL.UNSIGNED_BYTE, HD_LM); HD_LM.fill(0);
+  if (hdDofDirty) {
+    hdDofDirty = false;
+    const Z = typeof HD_DEPTH !== 'undefined' ? HD_DEPTH : null, n0 = typeof HD_DOF_NEAR !== 'undefined' ? HD_DOF_NEAR : 1e9, n1 = typeof HD_DOF_FAR !== 'undefined' ? HD_DOF_FAR : 1e9;
+    for (let i = 0; i < W * H; i++) HD_DOFB[i] = Z ? Math.round(clamp((Z[i] - n0) / (n1 - n0), 0, 1) * 255) : 0;
+    GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
+    GL.bindTexture(GL.TEXTURE_2D, hdTex.dof); GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, W, H, GL.RED, GL.UNSIGNED_BYTE, HD_DOFB);
+  }
+  if (hdOn) {
+    // glow chain: down-sample the emission four times, blurring each level (horizontal then vertical)
+    let src = hdTex.emit, sw = W, sh = H;
+    for (let k = 0; k < 4; k++) {
+      const w = HD_LV[k][0], h = HD_LV[k][1];
+      hdPass(hdProg.down, hdFbo.lv[k], w, h, src, 't', 1 / sw, 1 / sh);
+      hdPass(hdProg.blur, hdFbo.tmp[k], w, h, hdTex.lv[k], 'd', 1 / w, 0);
+      hdPass(hdProg.blur, hdFbo.lv[k], w, h, hdTex.tmp[k], 'd', 0, 1 / h);
+      src = hdTex.lv[k]; sw = w; sh = h;
+    }
+    if (typeof HD_SMOOTH !== 'undefined' && HD_SMOOTH > 0) {          // de-dither, twice
+      hdPass(hdProg.smooth, hdFbo.smt, W, H, hdTex.base, 't', 1 / W, 1 / H);
+      hdPass(hdProg.smooth, hdFbo.sm, W, H, hdTex.smt, 't', 1 / W, 1 / H);
+    }
+    // softened copy of the frame for depth of field
+    hdPass(hdProg.down, hdFbo.d1, HD_LV[0][0], HD_LV[0][1], hdTex.base, 't', 1 / W, 1 / H);
+    hdPass(hdProg.blur, hdFbo.d1t, HD_LV[0][0], HD_LV[0][1], hdTex.d1, 'd', 1 / HD_LV[0][0], 0);
+    hdPass(hdProg.blur, hdFbo.d1, HD_LV[0][0], HD_LV[0][1], hdTex.d1t, 'd', 0, 1 / HD_LV[0][1]);
+    if (typeof HD_DOF_DEEP !== 'undefined' && HD_DOF_DEEP) {         // a much softer copy for the deep focus mode
+      hdPass(hdProg.down, hdFbo.d2, HD_LV[1][0], HD_LV[1][1], hdTex.d1, 't', 1 / HD_LV[0][0], 1 / HD_LV[0][1]);
+      hdPass(hdProg.blur, hdFbo.d2t, HD_LV[1][0], HD_LV[1][1], hdTex.d2, 'd', 1.5 / HD_LV[1][0], 0);
+      hdPass(hdProg.blur, hdFbo.d2, HD_LV[1][0], HD_LV[1][1], hdTex.d2t, 'd', 0, 1.5 / HD_LV[1][1]);
+    }
+  }
+  // composite at the output resolution
+  const P = hdProg.comp;
+  GL.bindFramebuffer(GL.FRAMEBUFFER, null); GL.viewport(0, 0, HDC.width, HDC.height); GL.useProgram(P);
+  const names = ['base', 'emit', 'l1', 'l2', 'l3', 'l4', 'd1', 'dof', 'lmap', 'd2', 'sm'], texs = [hdTex.base, hdTex.emit, hdTex.lv[0], hdTex.lv[1], hdTex.lv[2], hdTex.lv[3], hdTex.d1, hdTex.dof, hdTex.lmap, hdTex.d2, hdTex.sm];
+  for (let k = 0; k < 11; k++) { GL.activeTexture(GL.TEXTURE0 + k); GL.bindTexture(GL.TEXTURE_2D, texs[k]); GL.uniform1i(GL.getUniformLocation(P, names[k]), k); }
+  GL.uniform2f(GL.getUniformLocation(P, 'src'), W, H); GL.uniform2f(GL.getUniformLocation(P, 'res'), HDC.width, HDC.height);
+  GL.uniform1f(GL.getUniformLocation(P, 'frm'), (hdFrame++) % 997); GL.uniform1f(GL.getUniformLocation(P, 'glow'), typeof HD_GLOW !== 'undefined' ? HD_GLOW : 1);
+  GL.uniform1f(GL.getUniformLocation(P, 'on'), hdOn ? 1 : 0);
+  GL.uniform1f(GL.getUniformLocation(P, 'smo'), typeof HD_SMOOTH !== 'undefined' ? HD_SMOOTH : 0);
+  GL.uniform1f(GL.getUniformLocation(P, 'deep'), typeof HD_DOF_DEEP !== 'undefined' && HD_DOF_DEEP ? 1 : 0);
+  GL.drawArrays(GL.TRIANGLES, 0, 3);
+  hdRecTick();
+}
+// ---- export: a PNG of the output frame, and one exact loop recorded as WebM (starts and stops at frame 0) ----
+function hdName(ext) { return TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + (hdOn ? 'hd-' : 'pixel-') + hdRes + 'p.' + ext; }
+function hdSave(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
+function hdPNG() { HDC.toBlob((b) => hdSave(b, hdName('png')), 'image/png'); }
+function hdRecordLoop() {
+  if (hdRecState || typeof MediaRecorder === 'undefined') return;
+  const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  let mt = ''; for (let k = 0; k < types.length; k++) if (MediaRecorder.isTypeSupported(types[k])) { mt = types[k]; break; }
+  hdRec = new MediaRecorder(HDC.captureStream(60), { mimeType: mt, videoBitsPerSecond: hdRes === 2160 ? 80e6 : 30e6 });
+  hdRecChunks = []; hdRec.ondataavailable = (e) => { if (e.data.size) hdRecChunks.push(e.data); };
+  hdRec.onstop = () => { hdSave(new Blob(hdRecChunks, { type: 'video/webm' }), hdName('webm')); hdRecState = 0; hdUpdateUI(); };
+  hdRecState = 1; hdUpdateUI();                                     // armed: recording starts when the loop wraps to frame 0
+}
+let hdPrevFrame = 0;
+function hdRecTick() {
+  if (hdRecState === 1 && frame < hdPrevFrame) { hdRec.start(250); hdRecState = 2; }
+  else if (hdRecState === 2 && frame < hdPrevFrame) { hdRec.stop(); hdRecState = 3; }
+  if (hdRecState === 2 && hdUI) hdUI.rec.textContent = 'Recording ' + (frame / 60).toFixed(1) + ' / ' + (LOOP_FRAMES / 60).toFixed(1) + ' s';
+  hdPrevFrame = frame;
+}
+function hdAddUI() {
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;right:10px;bottom:10px;display:flex;gap:6px;opacity:.4;transition:opacity .2s;font:12px/1 system-ui,sans-serif;z-index:2';
+  bar.onmouseenter = () => { bar.style.opacity = 1; }; bar.onmouseleave = () => { bar.style.opacity = 0.4; };
+  const mk = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; b.style.cssText = 'background:#1b1a24;color:#e8e4f0;border:1px solid #3a3850;padding:6px 10px;cursor:pointer'; bar.appendChild(b); return b; };
+  hdUI = {
+    fin: mk('', () => { hdOn = !hdOn; hdUpdateUI(); }),
+    res: mk('', () => { hdRes = hdRes === 1080 ? 2160 : 1080; hdResize(); hdUpdateUI(); }),
+    png: mk('PNG', hdPNG),
+    rec: mk('', hdRecordLoop)
+  };
+  document.body.appendChild(bar); hdUpdateUI();
+}
+function hdUpdateUI() {
+  if (!hdUI) return;
+  hdUI.fin.textContent = hdOn ? 'Finish: HD (H)' : 'Finish: pixel (H)';
+  hdUI.res.textContent = hdRes === 1080 ? '1080p (R)' : '4K (R)';
+  hdUI.rec.textContent = hdRecState === 1 ? 'Waiting for loop start…' : hdRecState >= 2 ? 'Recording…' : 'Record loop (WebM)';
+}
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+const HDM = typeof hdInit === 'function' ? hdInit() : false;          // optional HD finish (core/hd.js) takes over the output
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  if (HDM) { hdResize(); return; }
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  if (HDM) { hdPresent(); return; }
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

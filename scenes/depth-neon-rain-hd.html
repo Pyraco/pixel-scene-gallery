@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon Rain HD</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; image-rendering: crisp-edges; image-rendering: pixelated; }
+  #export { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 6px; opacity: .35; transition: opacity .2s; font: 12px/1 system-ui, sans-serif; }
+  #export:hover { opacity: 1; }
+  #export button { background: #1b1a24; color: #e8e4f0; border: 1px solid #3a3850; padding: 6px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(() => {
+
+/* ==========================================================================
+   TEST 1 - DEPTH PROJECTION: "Neon Rain"
+   Resolved options (Section A, non-defaults marked *):
+     OUTPUT_MODE loop · LOOP_SECONDS 45* · RESOLUTION 320x180 · FRAME letterbox-2.39
+     PROJECTION depth* · HORIZON 0.42* (high camera) · TRAVEL toward* · WORLD_W 1*
+     ENVIRONMENT exterior · SETTING narrow back-alley in a dense city* · ERA sci-fi*
+     TIME night* · WEATHER heavy-rain* · ATMOSPHERE heavy* · SKY plain-ramp
+     LIGHT_STYLE neon* · KEY_SOURCE neon* · PRACTICALS noodle sign (magenta),
+       vending machine (cyan), tube light (white)* · FLICKER neon-buzz* · SHAFTS off*
+     GRADE neon* · MOOD lonely, electric, quiet* · SUBJECT_COUNT 2*
+     S1 courier, long raincoat, clear umbrella, walk · S2 robot companion, hop
+     INTERACTION walk-together* · LOOP_CLOSE exit-reenter* · EFFECT_1 splash @ feet*
+     AMBIENT raindrops, fog-wisps* · SHOTS static-hold* · LOOP_CAMERA locked*
+   ========================================================================== */
+const TITLE = 'Neon Rain';
+const W = 320, H = 180, IMG_TOP = 23, IMG_BOT = 157;
+const LOOP_FRAMES = 2688;                     // 44.8 s, multiple of 32
+const SEED = 7, OUTPUT_MODE = 'loop', STILL_T = 0, DEBUG_KEYS = true, EXPORT_SCALES = [];
+
+const PAL_HEX = [
+  '#07060c', '#121020',                                   // 0-1   near-blacks
+  '#1a1830', '#26203f', '#3a2c55', '#5b3b6e',             // 2-5   sky: zenith -> city glow
+  '#8a5f95', '#5f4777', '#3b3157',                        // 6-8   fog: bright -> dim
+  '#3c3854', '#2c2942', '#1f1d31',                        // 9-11  concrete wall
+  '#4d3448', '#36263a',                                   // 12-13 brick
+  '#34324c', '#24223a', '#191729',                        // 14-16 wet asphalt
+  '#ffd6f2', '#ff4fc0', '#b0368a', '#5e2459',             // 17-20 magenta neon
+  '#dcffff', '#45e3f2', '#2389ac', '#1e4b66',             // 21-24 cyan neon
+  '#f6f3ff', '#aeaad0',                                   // 25-26 white tube
+  '#ffd27e', '#d8893f', '#7d4a36',                        // 27-29 amber windows
+  '#4a5a70', '#303b50', '#212838',                        // 30-32 raincoat
+  '#e3ae8f', '#a86e5c', '#6a4046',                        // 33-35 skin
+  '#d4ecf5', '#86a9c2',                                   // 36-37 clear umbrella
+  '#cfc9dc', '#8d86a6', '#514a6b',                        // 38-40 robot metal
+  '#b8c4ea', '#6a74a2'                                    // 41-42 rain
+];
+const K0 = 0, K1 = 1, SKY0 = 2, SKY1 = 3, SKY2 = 4, SKY3 = 5, FOG0 = 6, FOG1 = 7, FOG2 = 8,
+      WL0 = 9, WL1 = 10, WL2 = 11, BR0 = 12, BR1 = 13, GR0 = 14, GR1 = 15, GR2 = 16,
+      NM0 = 17, NM1 = 18, NM2 = 19, NM3 = 20, NC0 = 21, NC1 = 22, NC2 = 23, NC3 = 24,
+      WT0 = 25, WT1 = 26, AM0 = 27, AM1 = 28, AM2 = 29, CT0 = 30, CT1 = 31, CT2 = 32,
+      SK0 = 33, SK1 = 34, SK2 = 35, UM0 = 36, UM1 = 37, RB0 = 38, RB1 = 39, RB2 = 40, RN0 = 41, RN1 = 42;
+
+// ==========================================================================
+// CORE A - shared engine: palette tables, framebuffer, primitives, PRNG
+// (expects W, H, IMG_TOP, IMG_BOT, PAL_HEX, LOOP_FRAMES, SEED from the scene)
+// ==========================================================================
+const NP = PAL_HEX.length, CLEAR = 255, STEP = 1 / 60, TAU = Math.PI * 2, LOOP = LOOP_FRAMES / 60;
+const PAL32 = new Uint32Array(NP);
+for (let i = 0; i < NP; i++) {
+  const v = parseInt(PAL_HEX[i].slice(1), 16);
+  PAL32[i] = (0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)) >>> 0;
+}
+// Palette remap table: identity except for the listed [from, to] pairs. 256 wide so CLEAR maps to itself.
+function makeLUT(pairs) {
+  const l = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) l[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) l[pairs[i]] = pairs[i + 1];
+  return l;
+}
+
+// ---- framebuffer + draw target (any index buffer, with a translation) ----
+const FB = new Uint8Array(W * H);
+let TB = FB, TW = W, TY0 = IMG_TOP, TY1 = IMG_BOT, TOX = 0, TOY = 0;
+function target(buf, w, h, ox, oy) {
+  TB = buf; TW = w; TOX = ox || 0; TOY = oy || 0;
+  if (buf === FB) { TY0 = IMG_TOP; TY1 = IMG_BOT; } else { TY0 = 0; TY1 = h; }
+}
+const BAYER = new Uint8Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]);
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+function px(x, y, c) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  TB[y * TW + x] = c;
+}
+function rect(x, y, w, h, c) {
+  x += TOX; y += TOY;
+  const x0 = x < 0 ? 0 : x, x1 = x + w > TW ? TW : x + w;
+  const y0 = y < TY0 ? TY0 : y, y1 = y + h > TY1 ? TY1 : y + h;
+  for (let yy = y0; yy < y1; yy++) { const o = yy * TW; for (let xx = x0; xx < x1; xx++) TB[o + xx] = c; }
+}
+function hline(x0, x1, y, c) { if (x1 < x0) { const t = x0; x0 = x1; x1 = t; } rect(x0, y, x1 - x0 + 1, 1, c); }
+function vline(x, y0, y1, c) { if (y1 < y0) { const t = y0; y0 = y1; y1 = t; } rect(x, y0, 1, y1 - y0 + 1, c); }
+function drect(x, y, w, h, a, b, lvl) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) px(xx, yy, lvl > bay(xx, yy) ? b : a);
+}
+function remapAt(x, y, lut) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return;
+  const i = y * TW + x, v = TB[i];
+  if (v !== CLEAR) TB[i] = lut[v];
+}
+function getAt(x, y) {
+  x += TOX; y += TOY;
+  if (x < 0 || x >= TW || y < TY0 || y >= TY1) return CLEAR;
+  return TB[y * TW + x];
+}
+function line(x0, y0, x1, y1, c) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let e = dx + dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e;
+    if (e2 >= dy) { e += dy; x0 += sx; }
+    if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+function edgeF(ax, ay, bx, by, x, y) { return (bx - ax) * (y - ay) - (by - ay) * (x - ax); }
+// Convex quad fill (points in order, either winding), sampled at pixel centres.
+function quad(ax, ay, bx, by, cx, cy, dx, dy, c) {
+  const x0 = Math.floor(Math.min(ax, bx, cx, dx)), x1 = Math.ceil(Math.max(ax, bx, cx, dx));
+  const y0 = Math.floor(Math.min(ay, by, cy, dy)), y1 = Math.ceil(Math.max(ay, by, cy, dy));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5;
+    const e0 = edgeF(ax, ay, bx, by, X, Y), e1 = edgeF(bx, by, cx, cy, X, Y);
+    const e2 = edgeF(cx, cy, dx, dy, X, Y), e3 = edgeF(dx, dy, ax, ay, X, Y);
+    if ((e0 >= 0 && e1 >= 0 && e2 >= 0 && e3 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0 && e3 <= 0)) px(x, y, c);
+  }
+}
+function ellipse(cx, cy, rx, ry, c) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+    if (u * u + v * v <= 1) px(x, y, c);
+  }
+}
+// Radial dithered remap (glows, pools, soft shadows): level falls from maxLvl at the centre to 0 at the edge.
+function glow(cx, cy, rx, ry, lut, maxLvl) {
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry, d = u * u + v * v;
+    if (d < 1 && (1 - Math.sqrt(d)) * maxLvl > bay(x, y)) remapAt(x, y, lut);
+  }
+}
+
+// ---- PRNG + math (no allocation) ----
+let rs = (SEED * 0x9E3779B1) | 0;
+function rnd() {
+  rs = (rs + 0x6D2B79F5) | 0;
+  let t = Math.imul(rs ^ (rs >>> 15), 1 | rs);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return t * t * (3 - 2 * t); }
+function easeSine(t) { t = t < 0 ? 0 : t > 1 ? 1 : t; return 0.5 - 0.5 * Math.cos(t * Math.PI); }
+function ri(v) { return Math.round(v); }
+function hash(n) { n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); n = Math.imul(n ^ (n >>> 16), 0x45d9f3b); return ((n ^ (n >>> 16)) >>> 0) / 4294967296; }
+let frame = 0, gT = 0;
+// sin with k whole cycles per loop (anything built from this loops seamlessly)
+function cyc(k, ph) { return Math.sin(TAU * gT * k / LOOP + ph); }
+
+// ---- camera helpers (CAMERA_SMOOTHING): critically damped spring + low-pass filter ----
+// spring(): st[i] = position, st[i+1] = velocity; optional maxAcc (px/s^2, 0 = none) for very-smooth.
+function spring(st, i, target, smoothTime, maxAcc) {
+  const om = 2 / smoothTime, x = om * STEP, ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const ch = st[i] - target, tmp = (st[i + 1] + om * ch) * STEP;
+  let v = (st[i + 1] - om * tmp) * ex;
+  if (maxAcc > 0) { const dv = v - st[i + 1], lim = maxAcc * STEP; if (dv > lim) v = st[i + 1] + lim; else if (dv < -lim) v = st[i + 1] - lim; }
+  st[i] = maxAcc > 0 ? st[i] + v * STEP : target + (ch + tmp) * ex;
+  st[i + 1] = v;
+}
+function lowpass(cur, target, tau) { return cur + (target - cur) * (1 - Math.exp(-STEP / tau)); }
+// Pixel-stable follow for axis a (0 = x, 1 = y): camera = round(subject) + an integer offset that walks toward
+// round(off) one pixel at a time, and only on frames where that step would not reverse the camera's recent motion.
+// The subject never wobbles on screen and the background never steps back and forth.
+const PF_OFF = new Int32Array(2), PF_CAM = new Int32Array(2), PF_DIR = new Int8Array(2), PF_IDLE = new Uint16Array(2), PF_ON = new Uint8Array(2);
+function pixelFollow(a, subj, off, lo, hi) {
+  const s = Math.round(subj), want = Math.round(off);
+  if (!PF_ON[a]) { PF_ON[a] = 1; PF_OFF[a] = want; PF_CAM[a] = clamp(s + want, lo, hi); return PF_CAM[a]; }
+  if (want !== PF_OFF[a]) {
+    const d = want > PF_OFF[a] ? 1 : -1, step = clamp(s + PF_OFF[a] + d, lo, hi) - PF_CAM[a];
+    if (step === 0 || PF_DIR[a] === 0 || (step > 0 ? 1 : -1) === PF_DIR[a]) PF_OFF[a] += d;
+  }
+  const cam = clamp(s + PF_OFF[a], lo, hi), st = cam - PF_CAM[a];
+  if (st !== 0) { PF_DIR[a] = st > 0 ? 1 : -1; PF_IDLE[a] = 0; } else if (++PF_IDLE[a] > 30) PF_DIR[a] = 0;
+  PF_CAM[a] = cam;
+  return cam;
+}
+
+// ---- vignette + frame bars ----
+const VIG = new Uint8Array(W * H);
+function buildVignette(strength) {                  // 0 off, 1 subtle, 2 medium, 3 strong
+  const cx = (W - 1) / 2, cy = (IMG_TOP + IMG_BOT - 1) / 2, hx = W / 2, hy = (IMG_BOT - IMG_TOP) / 2;
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const nx = (x - cx) / hx, ny = (y - cy) / hy, a = nx * nx, b = ny * ny;
+    VIG[y * W + x] = strength ? clamp(ri((a * a + b * b * 0.7 + 0.6 * a * b - 0.55) * (6 + strength * 6)), 0, 15) : 0;
+  }
+}
+function applyVignette(lut) {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (VIG[i] > bay(x, y)) FB[i] = lut[FB[i]];
+  }
+}
+function frameBars(c) { FB.fill(c, 0, IMG_TOP * W); FB.fill(c, IMG_BOT * W); }
+
+// ---- lit sprite blit: rim on exposed edges, lit band, shaded interior, selective outline ----
+const NORIM = new Uint8Array(256);                  // 1 = material keeps its own highlight (metal, glass)
+let sBuf = FB, sW = 0, sH = 0, sFlip = false;
+function sop(x, y) {
+  if (x < 0 || y < 0 || x >= sW || y >= sH) return false;
+  return sBuf[y * sW + (sFlip ? sW - 1 - x : x)] !== CLEAR;
+}
+// rimR/rimL/rimT: rim colour where the right/left/top neighbour is empty (CLEAR = no rim on that side).
+// out/outSide: outline colour in empty pixels left (-1) / right (1) / all round (2) of the shape, 0 = none.
+// lit: lit-band width behind a rim; deeper pixels take shade[] (null = no shading). light[]: metal highlight.
+function blitLit(buf, w, h, ox, oy, flip, rimR, rimL, rimT, out, outSide, lit, shade, groundRows, light) {
+  sBuf = buf; sW = w; sH = h; sFlip = flip;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = buf[y * w + (flip ? w - 1 - x : x)], X = ox + x, Y = oy + y;
+    if (v === CLEAR) {
+      if (out === CLEAR || outSide === 0) continue;
+      let o;
+      if (outSide === -1) o = sop(x + 1, y);
+      else if (outSide === 1) o = sop(x - 1, y);
+      else o = sop(x + 1, y) || sop(x - 1, y) || sop(x, y + 1) || sop(x, y - 1);
+      if (o) px(X, Y, out);
+      continue;
+    }
+    const ground = y >= h - groundRows;
+    // a rim needs 2+ px of thickness behind it, so 1-px limbs and props don't turn into glowing sticks
+    const eR = rimR !== CLEAR && !sop(x + 1, y) && sop(x - 1, y), eL = rimL !== CLEAR && !sop(x - 1, y) && sop(x + 1, y);
+    const eT = rimT !== CLEAR && !sop(x, y - 1) && sop(x, y + 1);
+    let c = v;
+    if (!ground && (eR || eL || eT)) c = NORIM[v] ? light[v] : (eR ? rimR : eL ? rimL : rimT);
+    else if (shade !== null) {
+      let near = false;
+      for (let d = 2; d <= lit + 1 && !near; d++)
+        near = (rimR !== CLEAR && !sop(x + d, y)) || (rimL !== CLEAR && !sop(x - d, y)) || (rimT !== CLEAR && !sop(x, y - d));
+      if (!near) c = shade[v];
+    }
+    px(X, Y, c);
+  }
+}
+
+// ---------- remap tables ----------
+const SHADE = makeLUT([SKY3, SKY2, SKY2, SKY1, SKY1, SKY0, SKY0, K1, FOG0, FOG1, FOG1, FOG2, FOG2, WL2,
+  WL0, WL1, WL1, WL2, WL2, K1, BR0, BR1, BR1, WL2, GR0, GR1, GR1, GR2, GR2, K1, K1, K0,
+  NM0, NM1, NM1, NM2, NM2, NM3, NM3, WL2, NC0, NC1, NC1, NC2, NC2, NC3, NC3, WL2, WT0, WT1, WT1, WL0,
+  AM0, AM1, AM1, AM2, AM2, BR1, CT0, CT1, CT1, CT2, CT2, K1, SK0, SK1, SK1, SK2, SK2, BR1,
+  UM0, UM1, UM1, CT1, RB0, RB1, RB1, RB2, RB2, WL2, RN0, RN1, RN1, GR0]);
+const LIGHT = makeLUT([K0, K1, K1, WL2, WL2, WL1, WL1, WL0, WL0, FOG1, BR1, BR0, BR0, AM2, GR2, GR1, GR1, GR0, GR0, WL0,
+  SKY0, SKY1, SKY1, SKY2, SKY2, SKY3, SKY3, FOG0, FOG2, FOG1, FOG1, FOG0, FOG0, WT1,
+  CT2, CT1, CT1, CT0, CT0, UM1, SK2, SK1, SK1, SK0, RB2, RB1, RB1, RB0, RB0, WT0, UM1, UM0,
+  AM2, AM1, AM1, AM0, NM3, NM2, NC3, NC2, RN1, RN0, WT1, WT0]);
+// Coloured light tables: dark surfaces pick up the tint of each practical.
+function tintLUT(d, m, b) {               // dark tint, mid tint, bright tint
+  return makeLUT([K0, K1, K1, d, SKY0, d, SKY1, d, SKY2, d, SKY3, m, FOG2, d, FOG1, m, FOG0, b,
+    WL2, d, WL1, d, WL0, m, BR1, d, BR0, m, GR2, d, GR1, d, GR0, m, CT2, d, CT1, d, CT0, m,
+    SK2, d, SK1, m, SK0, b, RB2, d, RB1, m, RB0, b, UM1, m, RN1, m, RN0, b, AM2, m, d, m, m, b]);
+}
+const LIGHT_M = tintLUT(NM3, NM2, NM1), LIGHT_C = tintLUT(NC3, NC2, NC1), LIGHT_A = tintLUT(AM2, AM1, AM0);
+// One step toward the (glowing) fog: far = lighter and lower contrast.
+const FOGL = makeLUT([K0, K1, K1, FOG2, SKY0, FOG2, SKY1, FOG2, SKY2, FOG1, SKY3, FOG1, FOG2, FOG1, FOG1, FOG0,
+  WL2, FOG2, WL1, FOG2, WL0, FOG1, BR1, FOG2, BR0, FOG1, GR2, FOG2, GR1, FOG2, GR0, FOG1,
+  NM0, NM1, NM1, NM2, NM2, FOG1, NM3, FOG1, NC0, NC1, NC1, NC2, NC2, FOG1, NC3, FOG2, WT0, WT1, WT1, FOG0,
+  AM0, AM1, AM1, AM2, AM2, FOG1, CT0, FOG1, CT1, FOG2, CT2, FOG2, SK0, FOG0, SK1, FOG1, SK2, FOG2,
+  UM0, FOG0, UM1, FOG1, RB0, FOG0, RB1, FOG1, RB2, FOG2, RN0, RN1, RN1, FOG1]);
+// Wet-ground reflection: bright sources stay coloured, everything else sinks.
+const REFL = makeLUT([NM0, NM1, NM1, NM2, NM2, NM3, NM3, NM3, NC0, NC1, NC1, NC2, NC2, NC3, NC3, NC3,
+  WT0, WT1, WT1, FOG1, AM0, AM1, AM1, AM2, AM2, BR1, FOG0, FOG1, FOG1, FOG2, FOG2, GR0,
+  CT0, CT2, CT1, K1, CT2, K1, SK0, SK2, SK1, SK2, SK2, K1, RB0, RB2, RB1, RB2, RB2, K1, UM0, UM1, UM1, GR0,
+  WL0, GR0, WL1, GR2, WL2, K1, BR0, BR1, BR1, K1, SKY3, FOG2, SKY2, GR0, K1, K0]);
+
+// ---------- one-point perspective ----------
+// Camera 5 m up, looking down the alley. Ground row y -> depth z = CAMH*F/(y-HZ).
+const VPX = 160, HZ = IMG_TOP + ri(0.42 * (IMG_BOT - IMG_TOP)), F = 90, CAMH = 5, HALF = 3.2, ROOF = 10.5, ZFAR = 60;
+function sxp(X, z) { return VPX + X * F / z; }
+function syp(h, z) { return HZ + (CAMH - h) * F / z; }
+const S_SKY = 0, S_GROUND = 1, S_LWALL = 2, S_RWALL = 3, S_FAR = 4;
+const BG = new Uint8Array(W * H), SURF = new Uint8Array(W * H), ZB = new Float32Array(W * H), PUD = new Uint8Array(W * H);
+// Depth fog: two solid steps with narrow dithered hand-offs (13.5-18.5 m and 30-38 m). Distant areas stay
+// flat instead of turning into dither noise (B3 stacking/distance rule).
+function fogPix(c, z, x, y) {
+  if (clamp((z - 13.5) / 5 * 16, 0, 16) > bay(x, y)) c = FOGL[c];
+  if (clamp((z - 30) / 8 * 16, 0, 16) > bay(x + 2, y + 1)) c = FOGL[c];
+  return c;
+}
+function p3x(X, h, z) { return sxp(X, z); }
+function p3y(X, h, z) { return syp(h, z); }
+// quad on a wall plane (X = ±HALF) or facing the camera (constant z)
+function wallQuad(X, z0, z1, h0, h1, c) {
+  quad(sxp(X, z0), syp(h0, z0), sxp(X, z1), syp(h0, z1), sxp(X, z1), syp(h1, z1), sxp(X, z0), syp(h1, z0), c);
+}
+function faceRect(X0, X1, z, h0, h1, c) {
+  const x0 = ri(sxp(X0, z)), x1 = ri(sxp(X1, z)), y0 = ri(syp(h1, z)), y1 = ri(syp(h0, z));
+  rect(Math.min(x0, x1), y0, Math.abs(x1 - x0) + 1, y1 - y0 + 1, c);
+}
+function wallLine(X, z0, z1, h, c) { line(sxp(X, z0), syp(h, z0), sxp(X, z1), syp(h, z1), c); }
+function vertOnWall(X, z, h0, h1, c) { line(sxp(X, z), syp(h0, z), sxp(X, z), syp(h1, z), c); }
+const PUDDLES = [-1.3, 6.0, 0.9, 0.8, 9.6, 0.7, -0.5, 15, 1.1, 1.4, 22, 1.2, -1.6, 4.3, 0.6];
+
+function bake() {
+  target(BG, W, H);
+  // -- base pass: classify every pixel (sky / wall / ground / far) and texture it
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, dx = x + 0.5 - VPX, adx = Math.abs(dx), yy = y + 0.5;
+    const zw = adx > 0.01 ? HALF * F / adx : 1e9, zg = yy > HZ ? CAMH * F / (yy - HZ) : 1e9;
+    let c = K1, s = S_SKY, z = 1e4;
+    if (zw < ZFAR && yy >= syp(ROOF, zw) && yy < syp(0, zw)) {
+      s = dx < 0 ? S_LWALL : S_RWALL; z = zw;
+      const h = CAMH - (yy - HZ) * zw / F, dzpx = zw * zw / (HALF * F), dhpx = zw / F;
+      if (s === S_LWALL) {                                   // brick
+        const row = Math.floor(h / 0.3), fr = h / 0.3 - row, bz = (zw + (row & 1) * 0.35) / 0.7;
+        const mortar = (fr < 0.2 && dhpx < 0.1) || (bz - Math.floor(bz) < 0.12 && dzpx < 0.22);
+        c = mortar ? WL2 : (hash(row * 131 + Math.floor(bz)) < 0.3 ? BR0 : BR1);
+        if (dhpx >= 0.1 && bay(x, y) < 4) c = BR0;
+      } else {                                               // concrete panels with rain streaks
+        const pz = zw / 1.3, ph = h / 1.6;
+        const seam = (pz - Math.floor(pz) < 0.05 && dzpx < 0.3) || (ph - Math.floor(ph) < 0.05 && dhpx < 0.12);
+        c = seam ? WL2 : WL1;
+        if (!seam && hash(Math.floor(pz * 3) * 97) < 0.35 && bay(x, y) < 6) c = WL2;
+        if (!seam && h > 7.5 && bay(x, y) < 5) c = WL0;
+      }
+      if (h > ROOF - 0.25) c = WL0;                          // parapet catching the city glow
+      if (h < 0.18) c = K1;                                  // wall/ground junction
+    } else if (zg < ZFAR && yy >= HZ) {
+      s = S_GROUND; z = zg;
+      const X = dx * zg / F, r = hash(x * 7919 + y * 104729);
+      c = zg < 14 ? (r < 0.14 ? GR2 : r < 0.19 ? GR0 : GR1) : GR1;       // speckle only up close
+      if (zg < 14 && Math.abs(X) < 0.9 && bay(x, y) < 4) c = GR0;        // wet crown catches the far glow
+      if (Math.abs(X) > HALF - 0.2) c = GR2;
+    } else if (zw >= ZFAR && yy < syp(0, ZFAR) && yy >= syp(12, ZFAR)) {
+      s = S_FAR; z = ZFAR;                                   // street glow at the end of the alley
+      const t = (syp(0, ZFAR) - yy) / 16;
+      c = t < 0.35 ? FOG0 : (t - 0.35) * 20 > bay(x, y) ? FOG1 : FOG0;
+    } else {                                                 // sky between the rooftops
+      const t = (yy - IMG_TOP) / (HZ - IMG_TOP);
+      const k = clamp(t * 3, 0, 2.999), b = Math.floor(k), f = k - b;
+      const A = [SKY0, SKY1, SKY2, SKY3];
+      c = (f - 0.3) * 26 > bay(x, y) ? A[b + 1] : A[b];
+    }
+    BG[i] = c; SURF[i] = s; ZB[i] = z;
+  }
+  // -- puddles (dark mirrors; reflections are drawn live)
+  for (let p = 0; p < PUDDLES.length; p += 3) {
+    const X = PUDDLES[p], z = PUDDLES[p + 1], r = PUDDLES[p + 2];
+    const cx = sxp(X, z), cy = syp(0, z), rx = r * F / z, ry = Math.max(0.8, r * F * CAMH / (z * z));
+    for (let y = Math.floor(cy - ry); y <= cy + ry; y++) for (let x = Math.floor(cx - rx); x <= cx + rx; x++) {
+      const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+      if (u * u + v * v > 1 || y < IMG_TOP || y >= IMG_BOT || x < 0 || x >= W) continue;
+      const i = y * W + x; if (SURF[i] !== S_GROUND) continue;
+      PUD[i] = 1; BG[i] = (v < -0.6 && bay(x, y) < 8) ? GR0 : GR2;
+    }
+  }
+  // -- centre drain channel and grate
+  for (let y = syp(0, 20) | 0; y < IMG_BOT; y++) if (SURF[y * W + VPX] === S_GROUND) px(VPX, y, GR2);
+  faceRect(-0.35, 0.35, 5.2, 0, 0.02, K1); faceRect(-0.35, 0.35, 5.0, 0, 0.02, K1);
+  // -- windows: dark glass, some lit behind blinds
+  for (let side = -1; side <= 1; side += 2) for (let fl = 0; fl < 2; fl++) for (let k = 0; k < 11; k++) {
+    const z0 = 3.6 + k * 3.7 + (side > 0 ? 1.6 : 0), z1 = z0 + 1.5, h0 = 3.6 + fl * 3.1, h1 = h0 + 1.5;
+    if (z0 > 46) continue;
+    const X = side * HALF, lit = hash(k * 13 + fl * 7 + (side > 0 ? 101 : 0)) < 0.32;
+    wallQuad(X, z0 - 0.1, z1 + 0.1, h0 - 0.12, h1 + 0.1, WL2);
+    wallQuad(X, z0, z1, h0, h1, lit ? AM2 : K1);
+    if (lit) { wallQuad(X, z0 + 0.25, z1 - 0.25, h0 + 0.35, h1 - 0.2, AM1); for (let b = 1; b < 5; b++) wallLine(X, z0, z1, h0 + b * 0.3, AM2); }
+    else if (hash(k * 5 + fl) < 0.5) wallLine(X, z0 + 0.2, z1 - 0.4, h1 - 0.25, WL1);   // sky glint on glass
+  }
+  // -- left ground floor: noodle bar storefront + door + awning
+  wallQuad(-HALF, 6.0, 10.4, 0.25, 2.5, WL2);
+  wallQuad(-HALF, 6.2, 10.2, 0.4, 2.35, AM1);
+  wallQuad(-HALF, 6.4, 10.0, 1.2, 2.2, AM0);
+  wallQuad(-HALF, 6.2, 10.2, 0.4, 1.05, AM2);                        // counter
+  for (let s = 0; s < 3; s++) {                                      // diners' silhouettes
+    const zc = 6.9 + s * 1.2;
+    wallQuad(-HALF, zc, zc + 0.35, 1.0, 1.55, K1); wallQuad(-HALF, zc + 0.05, zc + 0.3, 1.55, 1.8, K1);
+  }
+  vertOnWall(-HALF, 8.2, 0.4, 2.35, WL2);
+  wallQuad(-HALF, 10.6, 11.6, 0, 2.2, AM2); wallQuad(-HALF, 10.7, 11.5, 1.5, 2.1, AM1);
+  for (let s = 0; s < 8; s++) wallQuad(-HALF, 6.0 + s * 0.55, 6.0 + s * 0.55 + 0.28, 2.55, 2.95, s & 1 ? BR1 : NM3);
+  // -- right ground floor: shutter, steel door, steam grate, vending recess
+  wallQuad(HALF, 11, 14.2, 0, 2.6, WL1);
+  for (let r = 0; r < 12; r++) wallLine(HALF, 11, 14.2, 0.2 + r * 0.2, WL2);
+  wallQuad(HALF, 18.6, 19.7, 0, 2.2, WL2); wallQuad(HALF, 18.7, 19.6, 0.05, 2.1, K1);
+  vertOnWall(HALF, 18.6, 0, 2.2, WL0);
+  wallQuad(HALF, 15.2, 15.9, 0, 0.3, K1); for (let s = 0; s < 4; s++) vertOnWall(HALF, 15.3 + s * 0.17, 0.02, 0.28, WL0);
+  // -- pipes, AC units, fire-escape railing
+  for (let p = 0; p < 3; p++) { const z = [5.3, 17.2, 27][p]; for (let d = 0; d < 2; d++) vertOnWall(-HALF, z + d * 0.08, 0, ROOF, d ? WL1 : WL0); }
+  for (let p = 0; p < 2; p++) { const z = [9.6, 24][p]; vertOnWall(HALF, z, 0, ROOF, WL2); }
+  for (let a = 0; a < 3; a++) { const z = [7.2, 16.5, 29][a], h = [5.6, 6.1, 5.4][a]; wallQuad(HALF, z, z + 0.8, h, h + 0.6, WL0); wallQuad(HALF, z + 0.1, z + 0.7, h + 0.1, h + 0.45, WL2); }
+  // fire-escape landing: attached at the second-floor sill line, spanning the two nearest windows,
+  // projecting 0.7 m from the wall (seen from below: the camera is at 5 m, the landing at 6.55 m)
+  const BZ0 = 4.8, BZ1 = 10.8, BH0 = 6.55, BH1 = 7.45, BX = HALF - 0.7;
+  quad(p3x(BX, BH0, BZ0), p3y(BX, BH0, BZ0), p3x(HALF, BH0, BZ0), p3y(HALF, BH0, BZ0),
+       p3x(HALF, BH0, BZ1), p3y(HALF, BH0, BZ1), p3x(BX, BH0, BZ1), p3y(BX, BH0, BZ1), K1);    // grating underside
+  for (let z = BZ0 + 0.4; z < BZ1; z += 0.4) line(p3x(BX, BH0, z), p3y(BX, BH0, z), p3x(HALF, BH0, z), p3y(HALF, BH0, z), WL2);
+  line(p3x(BX, BH1, BZ0), p3y(BX, BH1, BZ0), p3x(BX, BH1, BZ1), p3y(BX, BH1, BZ1), K1);           // top rail
+  line(p3x(BX, BH0, BZ0), p3y(BX, BH0, BZ0), p3x(BX, BH0, BZ1), p3y(BX, BH0, BZ1), WL0);          // lit front edge
+  for (let s = 0; s < 2; s++) { const z = s ? BZ1 : BZ0; line(p3x(BX, BH1, z), p3y(BX, BH1, z), p3x(HALF, BH1, z), p3y(HALF, BH1, z), K1); }
+  for (let z = BZ0; z <= BZ1 + 0.01; z += 0.3) line(p3x(BX, BH0, z), p3y(BX, BH0, z), p3x(BX, BH1, z), p3y(BX, BH1, z), K1);
+  for (let s = 0; s < 2; s++) { const z = s ? BZ1 - 0.3 : BZ0 + 0.3; line(p3x(BX, BH0, z), p3y(BX, BH0, z), p3x(HALF, 5.8, z), p3y(HALF, 5.8, z), K1); }  // brackets
+  // -- cables sagging across the alley
+  const CAB = [5.8, 8.1, 7.7, 11.8, 7.9, 7.4, 20.5, 8.4, 7.9, 33, 8.0, 7.6];
+  for (let k = 0; k < CAB.length; k += 3) {
+    const z = CAB[k];
+    let lx = sxp(-HALF, z), ly = syp(CAB[k + 1], z);
+    for (let s = 1; s <= 16; s++) {
+      const t = s / 16, X = lerp(-HALF, HALF, t), h = lerp(CAB[k + 1], CAB[k + 2], t) - 0.7 * 4 * t * (1 - t);
+      const nx = sxp(X, z), ny = syp(h, z);
+      line(lx, ly, nx, ny, K1); lx = nx; ly = ny;
+    }
+  }
+  // -- tiny far-street details inside the glow
+  faceRect(-1.2, -0.4, ZFAR, 3, 6, FOG1); faceRect(0.5, 1.4, ZFAR, 2, 7, FOG1);
+  faceRect(-1.0, -0.6, ZFAR, 4.5, 5.2, NC1); faceRect(0.8, 1.1, ZFAR, 5, 6, NM1);
+  // -- depth fog over everything baked (two dithered steps toward the glowing fog)
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (SURF[i] === S_SKY) continue;
+    BG[i] = fogPix(BG[i], ZB[i], x, y);
+  }
+  buildForeground();
+  buildVignette(2);
+  target(FB, W, H);
+}
+
+// ---------- practical lights: noodle sign (magenta), shop window (amber), vending machine (cyan), tube (white) ----------
+const L_N = 4;
+const LX = new Float32Array([-2.5, -3.0, 2.1, 2.9]), LH = new Float32Array([4.7, 1.3, 1.0, 2.45]);
+const LZ = new Float32Array([8.5, 8.2, 7.4, 19.3]), LR = new Float32Array([4.8, 2.9, 3.6, 4.4]);
+const LSTR = new Float32Array([27, 17, 25, 21]), LON = new Float32Array(L_N);
+const LLUT = [LIGHT_M, LIGHT_A, LIGHT_C, LIGHT];
+const LRGB = new Uint8Array(12);                    // each light's colour, for the HD finish's smooth light map
+for (let i = 0; i < 4; i++) { const v = parseInt(PAL_HEX[[NM1, AM1, NC1, WT0][i]].slice(1), 16); LRGB[i * 3] = v >> 16; LRGB[i * 3 + 1] = (v >> 8) & 255; LRGB[i * 3 + 2] = v & 255; }
+function hdLit() { return typeof hdActive === 'function' && hdActive(); }
+const LBX0 = new Int16Array(L_N), LBX1 = new Int16Array(L_N), LBY0 = new Int16Array(L_N), LBY1 = new Int16Array(L_N);
+for (let i = 0; i < L_N; i++) {                      // conservative screen bbox of each light's sphere
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (let k = 0; k < 8; k++) {
+    const X = LX[i] + (k & 1 ? LR[i] : -LR[i]), h = Math.max(0, LH[i] + (k & 2 ? LR[i] : -LR[i]));
+    const z = Math.max(2.5, LZ[i] + (k & 4 ? LR[i] : -LR[i]));
+    const sx = sxp(X, z), sy = syp(h, z);
+    x0 = Math.min(x0, sx); x1 = Math.max(x1, sx); y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
+  }
+  LBX0[i] = clamp(Math.floor(x0), 0, W - 1); LBX1[i] = clamp(Math.ceil(x1), 0, W - 1);
+  LBY0[i] = clamp(Math.floor(y0), IMG_TOP, IMG_BOT - 1); LBY1[i] = clamp(Math.ceil(y1), IMG_TOP, IMG_BOT - 1);
+}
+// Flicker (FLICKER = neon-buzz): deterministic functions of the frame, so they loop.
+const BURSTS = new Float32Array([3.1, 16.8, 27.4, 38.9]);
+function updateLights() {
+  let n = 1;
+  for (let b = 0; b < BURSTS.length; b++) if (gT >= BURSTS[b] && gT < BURSTS[b] + 0.55) n = hash((frame >> 1) * 31 + 7) > 0.5 ? 1 : 0.12;
+  LON[0] = n;
+  LON[1] = 0.92 + 0.08 * cyc(9, 0.4);
+  LON[2] = 1;
+  LON[3] = hash((frame >> 2) * 7 + 3) < 0.07 ? 0.15 : 1;
+}
+// Pools: each light remaps nearby wall/ground pixels by true 3D distance (dithered, up to 2 steps).
+function drawPools() {
+  const smooth = hdLit();                             // HD finish on: hand the pools over as smooth light
+  for (let i = 0; i < L_N; i++) {
+    const on = LON[i], lut = LLUT[i], R = LR[i], R2 = R * R;
+    for (let y = LBY0[i]; y <= LBY1[i]; y++) for (let x = LBX0[i]; x <= LBX1[i]; x++) {
+      const idx = y * W + x, s = SURF[idx];
+      if (s === S_SKY || s === S_FAR) continue;
+      const z = ZB[idx];
+      let X, h;
+      if (s === S_GROUND) { X = (x + 0.5 - VPX) * z / F; h = 0; }
+      else { X = s === S_LWALL ? -HALF : HALF; h = CAMH - (y + 0.5 - HZ) * z / F; }
+      const dX = X - LX[i], dH = h - LH[i], dZ = z - LZ[i], d2 = dX * dX + dH * dH + dZ * dZ;
+      if (d2 >= R2) continue;
+      const lvl = (1 - Math.sqrt(d2) / R) * LSTR[i] * on;
+      if (smooth) { const k = Math.min(1, lvl / 15); hdLight(idx, LRGB[i * 3], LRGB[i * 3 + 1], LRGB[i * 3 + 2], k * (0.55 + 0.45 * k)); continue; }   // same reach as the pixel pools
+      if (lvl > bay(x, y)) FB[idx] = lut[FB[idx]];
+      if (lvl - 16 > bay(x + 1, y + 2)) FB[idx] = lut[FB[idx]];
+    }
+  }
+}
+
+// ---------- the neon signs themselves ----------
+const NS_X0 = ri(sxp(-3.2, 8.5)), NS_X1 = ri(sxp(-2.3, 8.5)), NS_Y0 = ri(syp(6.4, 8.5)), NS_Y1 = ri(syp(3.0, 8.5));
+const NS_W = NS_X1 - NS_X0 + 1, NS_H = NS_Y1 - NS_Y0 + 1, NSIGN = new Uint8Array(NS_W * NS_H);
+{                                                    // bake glyph layout: 0 panel, 1 border, 2 stroke
+  for (let y = 0; y < NS_H; y++) for (let x = 0; x < NS_W; x++)
+    NSIGN[y * NS_W + x] = (x === 0 || y === 0 || x === NS_W - 1 || y === NS_H - 1) ? 1 : 0;
+  const cells = 4, ch = Math.floor((NS_H - 4) / cells);
+  for (let g = 0; g < cells; g++) {
+    const gy = 2 + g * ch, gx0 = 2, gx1 = NS_W - 3;
+    for (let x = gx0; x <= gx1; x++) NSIGN[(gy + 1) * NS_W + x] = 2;                         // top bar
+    const vx = gx0 + ((hash(g * 17) * (gx1 - gx0 + 1)) | 0);
+    for (let y = gy + 1; y < gy + ch - 1; y++) NSIGN[y * NS_W + vx] = 2;                       // stem
+    const hy = gy + 2 + ((hash(g * 29 + 5) * (ch - 4)) | 0);
+    for (let x = gx0 + 1; x <= gx1; x++) if (hash(g * 7 + x) < 0.8) NSIGN[hy * NS_W + x] = 2;   // cross stroke
+    if (hash(g * 3 + 1) < 0.6) NSIGN[(gy + ch - 2) * NS_W + gx0] = 2;
+  }
+}
+// Vending bank against the right wall, fronts facing across the alley (plane X = VM_X), 3 machines along z.
+const VM_X = 2.4, VM_Z0 = 6.2, VM_Z1 = 8.6, VM_H = 1.9;
+const VMC_X = sxp(VM_X, (VM_Z0 + VM_Z1) / 2), VMC_Y = syp(1.0, (VM_Z0 + VM_Z1) / 2);   // face centre (glow, rain tint)
+function drawSigns() {
+  const on = LON[0] > 0.5;
+  // noodle sign: bracket, panel, border, glyph strokes; halo when lit
+  line(NS_X0 - 1, NS_Y0 + 3, sxp(-HALF, 8.5), syp(6.2, 8.5), K1);
+  line(NS_X0 - 1, NS_Y1 - 3, sxp(-HALF, 8.5), syp(3.2, 8.5), K1);
+  for (let y = 0; y < NS_H; y++) for (let x = 0; x < NS_W; x++) {
+    const v = NSIGN[y * NS_W + x];
+    px(NS_X0 + x, NS_Y0 + y, v === 0 ? K1 : v === 1 ? (on ? NM1 : NM3) : (on ? NM0 : NM2));
+  }
+  if (on && !hdLit()) glow((NS_X0 + NS_X1) / 2, (NS_Y0 + NS_Y1) / 2, NS_W * 1.9, NS_H * 0.8, LIGHT_M, 9);   // the HD glow replaces the halo
+  // vending bank: dark end panel toward the camera, top seen from above, lit fronts facing across the alley
+  quad(sxp(VM_X, VM_Z0), syp(0, VM_Z0), sxp(HALF, VM_Z0), syp(0, VM_Z0), sxp(HALF, VM_Z0), syp(VM_H, VM_Z0), sxp(VM_X, VM_Z0), syp(VM_H, VM_Z0), WL2);
+  line(sxp(VM_X, VM_Z0), syp(VM_H, VM_Z0), sxp(VM_X, VM_Z0), syp(0, VM_Z0), NC3);                  // cyan spill on the end edge
+  quad(sxp(VM_X, VM_Z0), syp(VM_H, VM_Z0), sxp(HALF, VM_Z0), syp(VM_H, VM_Z0), sxp(HALF, VM_Z1), syp(VM_H, VM_Z1), sxp(VM_X, VM_Z1), syp(VM_H, VM_Z1), WL1);
+  wallQuad(VM_X, VM_Z0, VM_Z1, 0, VM_H, WL1);
+  for (let m = 0; m < 3; m++) {
+    const za = VM_Z0 + m * 0.8, zb = za + 0.8;
+    wallQuad(VM_X, za + 0.08, zb - 0.08, 1.66, 1.82, NC0);                                            // lit header
+    wallQuad(VM_X, za + 0.1, zb - 0.1, 0.9, 1.6, NC2);                                                // display window
+    for (let r = 0; r < 3; r++) { const h = 1.05 + r * 0.2; wallLine(VM_X, za + 0.18, zb - 0.18, h, (m + r) & 1 ? NC0 : AM0); }
+    wallQuad(VM_X, za + 0.2, zb - 0.2, 0.25, 0.42, K1);                                               // dispenser slot
+    vertOnWall(VM_X, zb, 0, VM_H, WL2);                                                               // gap between machines
+  }
+  if (!hdLit()) glow(VMC_X, VMC_Y, 11, 18, LIGHT_C, 7);
+  // tube light over the steel door
+  const tx0 = sxp(3.15, 19.3), tx1 = sxp(2.6, 19.3), ty = syp(2.45, 19.3);
+  line(tx0, ty, tx1, ty, LON[3] > 0.5 ? WT0 : WT1);
+  if (LON[3] > 0.5 && !hdLit()) glow((tx0 + tx1) / 2, ty, 6, 3, LIGHT, 8);
+}
+
+// ---------- wet-ground reflections: mirrored sources drawn into RB, composited onto ground ----------
+const RB = new Uint8Array(W * H);
+function drawReflections() {
+  RB.fill(CLEAR);
+  target(RB, W, H);
+  faceRect(-HALF, HALF, ZFAR, -9, 0, FOG0);                           // far street glow
+  wallQuad(-HALF, 6.2, 10.2, -2.35, -0.4, AM0);                        // noodle bar window
+  wallQuad(-HALF, 10.6, 11.6, -2.2, 0, AM1);
+  faceRect(-3.2, -2.3, 8.5, -6.4, -3.0, LON[0] > 0.5 ? NM1 : NM3);     // sign
+  wallQuad(VM_X, VM_Z0, VM_Z1, -VM_H, 0, NC1);                          // vending fronts
+  if (LON[3] > 0.5) faceRect(2.6, 3.2, 19.3, -2.6, -2.3, WT0);         // tube
+  target(FB, W, H);
+  const wob = frame >> 3;
+  for (let y = HZ; y < IMG_BOT; y++) {
+    const zr = CAMH * F / (y + 0.5 - HZ);                               // ripple jitter only up close; far reflections stay still
+    const jx = zr < 16 ? ((hash(y * 73 + wob) * 3) | 0) - 1 : 0;
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x; if (SURF[idx] !== S_GROUND) continue;
+      const sx = x + jx; if (sx < 0 || sx >= W) continue;
+      const v = RB[y * W + sx]; if (v === CLEAR) continue;
+      if ((PUD[idx] ? 13 : 6) > bay(x, y)) FB[idx] = fogPix(REFL[v], ZB[idx], x, y);
+    }
+  }
+}
+
+// ---------- foreground: near-black, out-of-focus gutter, bags and crate (static camera -> baked) ----------
+const FG = new Uint8Array(W * H);
+function buildForeground() {
+  FG.fill(CLEAR);
+  target(FG, W, H);
+  quad(-6, IMG_TOP - 2, 84, IMG_TOP - 2, 84, IMG_TOP + 7, -6, IMG_TOP + 3, 1);          // gutter
+  rect(72, IMG_TOP + 5, 5, 16, 1); ellipse(74, IMG_TOP + 21, 4, 2, 1);                 // downspout
+  ellipse(16, IMG_BOT + 1, 24, 13, 1); ellipse(40, IMG_BOT + 3, 17, 10, 1); ellipse(4, IMG_BOT - 8, 11, 11, 1);
+  ellipse(28, IMG_BOT - 9, 8, 6, 1);
+  rect(272, IMG_BOT - 18, 50, 20, 1); rect(252, IMG_BOT - 11, 6, 12, 1); ellipse(255, IMG_BOT - 11, 3, 2, 1);
+  // soften: concavity-only dithered fringe (2), light-catching tops get a magenta bounce (3)
+  const cnt = new Uint8Array(W * H);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if ((dx || dy) && FG[(y + dy) * W + x + dx] === 1) n++;
+    cnt[y * W + x] = n;
+  }
+  for (let i = 0; i < W * H; i++) {
+    if (FG[i] === CLEAR && cnt[i] >= 3) FG[i] = 2;
+    else if (FG[i] === 1 && i >= W && FG[i - W] === CLEAR && (i % W) < 60 && i > (IMG_BOT - 24) * W) FG[i] = 3;
+  }
+  target(BG, W, H);
+}
+function drawForeground() {
+  for (let y = IMG_TOP; y < IMG_BOT; y++) for (let x = 0; x < W; x++) {
+    const v = FG[y * W + x]; if (v === CLEAR) continue;
+    if (v === 1) FB[y * W + x] = K1;
+    else if (v === 2) { if ((x + y) & 1) FB[y * W + x] = K1; }
+    else FB[y * W + x] = bay(x, y) < 8 ? NM3 : K1;
+  }
+  // drips from the gutter (periods divide the loop length, so they loop)
+  for (let d = 0; d < 3; d++) {
+    const P = d === 0 ? 64 : d === 1 ? 84 : 96, x = d === 0 ? 31 : d === 1 ? 53 : 74;
+    const t = (frame % P) / 60, y0 = d === 2 ? IMG_TOP + 23 : IMG_TOP + 5 + (x >> 4), y = y0 + ri(0.5 * 320 * t * t);
+    if (t < 0.12) px(x, y0, RN1);
+    else if (y < IMG_BOT) { px(x, y, RN0); px(x, y - 1, RN1); }
+  }
+}
+
+// ---------- subjects: courier (S1) + robot (S2), front views at fixed size tiers ----------
+// Depth projection never smooth-scales: each tier is redrawn procedurally at its own pixel height.
+const CT_TIERS = new Uint8Array([4, 6, 9, 13, 18, 25, 34, 46]);
+const UMB = 254;                                         // translucent umbrella interior marker
+const EMIS = new Uint8Array(256); EMIS[NC0] = EMIS[NC1] = EMIS[AM0] = EMIS[AM1] = 1;
+NORIM[UM0] = NORIM[UM1] = 1;
+const SPR_W = 64, SPR_H = 64, SPR = new Uint8Array(SPR_W * SPR_H), SAX = 32, SAY = 62;
+function tierFor(hpx, tiers) {
+  let t = tiers[0];
+  for (let i = 0; i < tiers.length; i++) if (tiers[i] <= hpx * 1.12) t = tiers[i];
+  return t;
+}
+function drawCourier(T, f, look) {
+  SPR.fill(CLEAR); target(SPR, SPR_W, SPR_H, SAX, SAY);
+  if (T <= 6) {                                          // distant: dome + body stroke
+    hline(-2, 2, -T + 2, UM0); hline(-1, 1, -T + 1, UMB); vline(0, -T + 3, -1, CT1);
+    px(f & 2 ? -1 : 1, 0, K1); return;
+  }
+  const b = (T >= 13 && (f & 1)) ? -1 : 0;
+  const ud = Math.max(2, ri(0.23 * T)), uw = Math.max(2, ri(0.42 * T)), lift = look ? Math.max(1, ri(0.05 * T)) : 0;
+  const top = -T + 1 + b - lift;
+  const hy0 = -T + ri(0.24 * T) + b, hy1 = -T + ri(0.35 * T) + b, hw = Math.max(1, ri(0.075 * T));
+  const cy0 = -T + ri(0.35 * T) + b, cy1 = -Math.max(2, ri(0.15 * T)) + b;
+  const lx = Math.max(1, ri(0.07 * T)), sway = T >= 13 ? (f === 0 ? 1 : f === 2 ? -1 : 0) : 0;
+  // legs: stepping toward camera, near foot lower
+  for (let s = -1; s <= 1; s += 2) {
+    const lifted = (f === 0 && s > 0) || (f === 2 && s < 0), yb = lifted ? -1 : 0;
+    vline(s * lx, cy1, yb, K1);
+    if (T >= 18) px(s * lx + s, yb, K1);
+  }
+  // coat
+  for (let y = cy0; y <= cy1; y++) {
+    const t = (y - cy0) / Math.max(1, cy1 - cy0), half = Math.max(1, ri(lerp(0.14 * T, 0.2 * T, t)));
+    const o = t > 0.7 ? sway : 0;
+    hline(-half + o, half + o, y, CT1);
+    if (T >= 18) { px(o, y, CT2); if (y === cy0 + ri(0.42 * (cy1 - cy0))) hline(-half + o + 1, half + o - 1, y, CT2); }
+  }
+  if (T >= 13) hline(-hw - 1, hw + 1, cy0, CT0);        // turned-up collar
+  const sh = Math.max(1, ri(0.14 * T)), hx = ri(0.1 * T) + 1, hyH = -T + ri(0.46 * T) + b;
+  line(-sh, cy0 + 1, -sh - (T >= 18 ? 1 : 0), cy0 + ri(0.38 * T), CT1);        // free arm
+  px(-sh - (T >= 18 ? 1 : 0), cy0 + ri(0.38 * T) + 1, SK1);
+  // head (shaded under the umbrella); face shows when she looks up
+  for (let y = hy0; y <= hy1; y++) hline(-hw, hw, y, SK1);
+  const hairRows = Math.max(1, ri((hy1 - hy0 + 1) * (look ? 0.3 : 0.55)));
+  for (let y = hy0; y < hy0 + hairRows; y++) hline(-hw, hw, y, K1);
+  vline(-hw, hy0, hy1 - 1, K1);
+  if (look && T >= 13) { for (let y = hy0 + hairRows; y <= hy1; y++) hline(-hw + 1, hw, y, SK0); if (T >= 18) { px(-1, hy0 + hairRows + 1, K1); px(1, hy0 + hairRows + 1, K1); } }
+  // umbrella: shaft, hand, dome (translucent interior, bright rim, ribs)
+  vline(hx, top + ud, hyH, UM1);
+  line(sh, cy0 + 1, hx, hyH, CT1); if (T >= 25) line(sh, cy0 + 2, hx, hyH + 1, CT1);
+  px(hx, hyH, SK0);
+  for (let r = 0; r < ud; r++) {
+    const k = 1 - (r + 1) / ud, half = Math.max(1, ri(uw * Math.sqrt(1 - k * k))), y = top + r;
+    for (let x = -half; x <= half; x++) px(x, y, (x === -half || x === half || r === 0) ? UM0 : UMB);
+  }
+  for (let x = -uw; x <= uw; x += 2) px(x, top + ud, UM0);                       // scalloped hem
+  if (T >= 18) { line(0, top, -ri(uw * 0.55), top + ud - 1, UM1); line(0, top, ri(uw * 0.55), top + ud - 1, UM1); }
+  px(0, top - 1, UM1);
+}
+function drawRobot(R, hop, look, blink) {
+  SPR.fill(CLEAR); target(SPR, SPR_W, SPR_H, SAX, SAY);
+  if (R <= 3) { rect(-1, -R + 1, 2, R, RB1); px(0, -R + 1, NC1); return; }
+  const legH = Math.max(1, ri(0.14 * R)) - (hop > 0 && R >= 8 ? 1 : 0), bodyH = Math.max(2, ri(0.38 * R));
+  const headH = Math.max(1, ri(0.3 * R)), bw = Math.max(1, ri(0.3 * R)), hw = Math.max(1, ri(0.25 * R));
+  const lg = Math.max(1, ri(0.18 * R)), by1 = -legH - 1, by0 = by1 - bodyH + 1, hy1 = by0 - 1, hy0 = hy1 - headH + 1;
+  vline(-lg, by1 + 1, 0, RB2); vline(lg, by1 + 1, 0, RB2);
+  rect(-bw, by0, bw * 2 + 1, bodyH, RB1); hline(-bw, bw, by0, RB0); hline(-bw, bw, by1, RB2);
+  if (R >= 8) px(bw - 1, by0 + 1, AM1);
+  if (R >= 11) for (let y = by0 + 2; y < by1 - 1; y += 2) hline(-bw + 1, -1, y, RB2);
+  for (let y = hy0; y <= hy1; y++) {
+    const k = (y - hy0 + 1) / headH, half = Math.max(1, ri(hw * Math.sqrt(k)));
+    hline(-half, half, y, y === hy1 ? RB1 : RB0);
+  }
+  const ew = Math.max(0, ri(0.12 * R)), ey = hy0 + ri(headH * 0.55) - (look ? 1 : 0);
+  hline(-ew, ew, ey, NC1); if (R >= 11) px(0, ey, NC0);
+  const ax = look ? -1 : 0, at = hy0 - Math.max(1, ri(0.12 * R));
+  line(0, hy0 - 1, ax, at, RB2); px(ax, at - 1, blink ? AM0 : RB2);
+}
+
+// ---------- timeline: emerge from the fog, walk together, pause under the sign, walk out of frame ----------
+const T_EMERGE = 4.0, T_W1 = 30.2, T_HOLD = 36.0, T_W2 = 40.2, Z_START = 42, Z_HOLD = 6.8, Z_END = 3.3;
+function walkS(u, rIn, rOut) {
+  u = clamp(u, 0, 1);
+  const v = 1 / (1 - rIn / 2 - rOut / 2);
+  if (rIn > 0 && u < rIn) return v * u * u / (2 * rIn);
+  if (rOut > 0 && u > 1 - rOut) return 1 - v * (1 - u) * (1 - u) / (2 * rOut);
+  return v * (u - rIn / 2);
+}
+const CO = { vis: false, z: 99, X: -0.45, dist: 0, f: 0, look: false, prevF: 0 };
+const RO = { vis: false, z: 99, X: 0.45, dist: 0, hop: 0, look: false, prevHop: 0, blink: false };
+function poseAt(t, P, isRobot) {
+  let z = 99, dist = 0, s = 0;
+  if (t >= T_EMERGE && t < T_W1) { s = walkS((t - T_EMERGE) / (T_W1 - T_EMERGE), 0, 0.07); z = lerp(Z_START, Z_HOLD, s); dist = Z_START - z; }
+  else if (t >= T_W1 && t < T_HOLD) { z = Z_HOLD; dist = Z_START - Z_HOLD; }
+  else if (t >= T_HOLD && t < T_W2) { s = walkS((t - T_HOLD) / (T_W2 - T_HOLD), 0.3, 0); z = lerp(Z_HOLD, Z_END, s); dist = Z_START - z; }
+  P.vis = z < 41;
+  P.z = z; P.dist = dist;
+  if (isRobot) P.X = t >= T_HOLD ? lerp(0.45, 0.7, s) : 0.45;
+  else P.X = t >= T_HOLD ? lerp(-0.45, -0.25, s) : -0.45;
+}
+function updatePoses() {
+  const tq = Math.floor(gT * 12) / 12;                   // pose sampled on the 12 fps grid
+  poseAt(gT, CO, false); poseAt(gT, RO, true);
+  let dq = CO.dist;
+  { const z = CO.z; poseAt(tq, CO, false); dq = CO.dist; CO.z = z; poseAt(gT, CO, false); }
+  const walking = (gT >= T_EMERGE && gT < T_W1 - 0.3) || (gT >= T_HOLD + 0.15 && gT < T_W2);
+  CO.prevF = CO.f;
+  CO.f = walking ? Math.floor(dq / 0.36) & 3 : 1;
+  CO.look = tq >= 30.7 && tq < 35.3;
+  RO.look = tq >= 30.9 && tq < 34.6;
+  const hopPhase = walking ? dq / 0.55 : (tq >= 32.5 && tq < 33.1 ? (tq - 32.5) / 0.3 : 0);
+  RO.prevHop = RO.hop;
+  RO.hop = Math.abs(Math.sin(Math.PI * hopPhase)) * 0.22;
+  RO.blink = ((frame >> 4) & 7) === 0;
+}
+// Rim colour per side from whichever practical is near (coloured light, never from facing).
+function rimLeft(z) {
+  if (Math.abs(z - 8.5) < 5.5 && LON[0] > 0.5) return NM1;
+  if (Math.abs(z - 8.2) < 3) return AM1;
+  return z > 13 ? FOG1 : CLEAR;
+}
+function rimRight(z) {
+  if (Math.abs(z - 7.4) < 4.5) return NC1;
+  if (Math.abs(z - 19.3) < 4.5 && LON[3] > 0.5) return WT1;
+  return z > 13 ? FOG1 : CLEAR;
+}
+function blitSubject(sx, feetY, z) {
+  const ox = sx - SAX, oy = feetY - SAY;
+  const rimL = rimLeft(z), rimR = rimRight(z), rimT = z > 11 ? FOG0 : CLEAR;
+  sBuf = SPR; sW = SPR_W; sH = SPR_H; sFlip = false;
+  glow(sx + 0.5, feetY + 0.5, Math.max(2, 0.4 * F / z), Math.max(1, 0.12 * F / z), SHADE, 14);   // contact shadow
+  for (let y = 0; y < SPR_H; y++) for (let x = 0; x < SPR_W; x++) {                               // reflection
+    const v = SPR[y * SPR_W + x]; if (v === CLEAR) continue;
+    const X = ox + x, RY = 2 * feetY - (oy + y) + 1;
+    if (X < 0 || X >= W || RY < IMG_TOP || RY >= IMG_BOT) continue;
+    const idx = RY * W + X; if (SURF[idx] !== S_GROUND) continue;
+    if ((PUD[idx] ? 11 : 5) > bay(X, RY)) FB[idx] = fogPix(REFL[v === UMB ? UM1 : v], ZB[idx], X, RY);
+  }
+  for (let y = 0; y < SPR_H; y++) for (let x = 0; x < SPR_W; x++) {
+    const v = SPR[y * SPR_W + x]; if (v === CLEAR) continue;
+    const X = ox + x, Y = oy + y;
+    if (v === UMB) { if (bay(X, Y) < 9) remapAt(X, Y, LIGHT); continue; }
+    let c = v;
+    if (!EMIS[v]) {
+      const eL = !sop(x - 1, y), eR = !sop(x + 1, y), eT = !sop(x, y - 1);
+      if (NORIM[v]) c = v;
+      else if (eL && rimL !== CLEAR && sop(x + 1, y)) c = rimL;
+      else if (eR && rimR !== CLEAR && sop(x - 1, y)) c = rimR;
+      else if (eT && rimT !== CLEAR && sop(x, y + 1)) c = rimT;
+      else {
+        const near = (rimL !== CLEAR && !sop(x - 2, y)) || (rimR !== CLEAR && !sop(x + 2, y));
+        if (!near) c = SHADE[v];
+      }
+    }
+    px(X, Y, fogPix(c, z, X, Y));
+  }
+}
+function drawSubjects() {
+  const order = CO.z >= RO.z;                            // farther first
+  for (let k = 0; k < 2; k++) {
+    const robot = (k === 0) === !order ? true : false;
+    const P = robot ? RO : CO;
+    if (!P.vis) continue;
+    const z = P.z, feetY = ri(syp(0, z)), sx = ri(sxp(P.X, z));
+    if (robot) {
+      const R = tierFor(0.8 * F / z, CT_TIERS) === 4 ? 3 : Math.max(3, ri(tierFor(1.75 * F / z, CT_TIERS) * 0.46));
+      drawRobot(R, RO.hop, RO.look, RO.blink);
+      target(FB, W, H);
+      blitSubject(sx, feetY - ri(RO.hop * F / z), z);
+    } else {
+      drawCourier(tierFor(1.75 * F / z, CT_TIERS), CO.f, CO.look);
+      target(FB, W, H);
+      blitSubject(sx, feetY, z);
+    }
+  }
+}
+
+// ---------- particles: rain (permanent slice), splashes, ripples, steam ----------
+const PN = 420, RAIN_N = 200, P_SPLASH = 1, P_RIPPLE = 2, P_STEAM = 3;
+const pX = new Float32Array(PN), pY = new Float32Array(PN), pVX = new Float32Array(PN), pVY = new Float32Array(PN);
+const pAge = new Float32Array(PN), pLife = new Float32Array(PN), pK = new Float32Array(PN), pType = new Uint8Array(PN);
+let pNext = RAIN_N;
+for (let i = 0; i < RAIN_N; i++) {
+  pX[i] = rnd() * W; pY[i] = IMG_TOP + rnd() * (IMG_BOT - IMG_TOP);
+  pK[i] = 0.25 + rnd() * 0.75; pVY[i] = 130 + 210 * pK[i];
+}
+function spawn(type, x, y, vx, vy, life, k) {
+  for (let n = 0; n < PN - RAIN_N; n++) {
+    const i = RAIN_N + ((pNext - RAIN_N + n) % (PN - RAIN_N));
+    if (pType[i] !== 0) continue;
+    pType[i] = type; pX[i] = x; pY[i] = y; pVX[i] = vx; pVY[i] = vy; pAge[i] = 0; pLife[i] = life; pK[i] = k;
+    pNext = i + 1 >= PN ? RAIN_N : i + 1;
+    return;
+  }
+}
+const STEAM_X = sxp(3.05, 15.5), STEAM_Y = syp(0.15, 15.5);
+function update() {
+  updateLights();
+  updatePoses();
+  // footfall splashes (EFFECT_1: splash @ feet)
+  if (CO.vis && CO.f !== CO.prevF && (CO.f === 0 || CO.f === 2) && CO.z < 16) {
+    const fx = sxp(CO.X, CO.z) + (CO.f === 0 ? -1 : 1) * Math.max(1, 0.12 * F / CO.z), fy = syp(0, CO.z);
+    spawn(P_SPLASH, fx, fy, 0, 0, 0.14, CO.z); spawn(P_SPLASH, fx + 1, fy - 1, 0, 0, 0.1, CO.z);
+  }
+  if (RO.vis && RO.prevHop >= 0.03 && RO.hop < 0.03 && RO.z < 16) spawn(P_SPLASH, sxp(RO.X, RO.z), syp(0, RO.z), 0, 0, 0.14, RO.z);
+  // rain hitting the ground / puddles
+  for (let a = 0; a < 4; a++) {
+    const x = (rnd() * W) | 0, y = HZ + 2 + ((rnd() * (IMG_BOT - HZ - 2)) | 0), idx = y * W + x;
+    if (SURF[idx] !== S_GROUND) continue;
+    if (PUD[idx] && ZB[idx] < 18 && rnd() < 0.5) spawn(P_RIPPLE, x, y, 0, 0, 0.5, ZB[idx]);
+    else if (ZB[idx] < 14) spawn(P_SPLASH, x, y, 0, 0, 0.08 + rnd() * 0.08, ZB[idx]);   // distant splashes read as noise
+  }
+  if (frame % 18 === 0) spawn(P_STEAM, STEAM_X, STEAM_Y, -2.5 - rnd() * 2, -4.5 - rnd() * 3, 3.2, 0);
+  for (let i = 0; i < RAIN_N; i++) {
+    pY[i] += pVY[i] * STEP; pX[i] += pVY[i] * 0.16 * STEP;
+    if (pY[i] > IMG_BOT + 4) { pY[i] -= (IMG_BOT - IMG_TOP) + 8 + rnd() * 8; pX[i] = rnd() * (W + 30) - 30; }
+  }
+  for (let i = RAIN_N; i < PN; i++) {
+    if (pType[i] === 0) continue;
+    pAge[i] += STEP; pX[i] += pVX[i] * STEP; pY[i] += pVY[i] * STEP;
+    if (pAge[i] >= pLife[i]) pType[i] = 0;
+  }
+}
+function drawRain() {
+  const nsOn = LON[0] > 0.5, ncx = (NS_X0 + NS_X1) / 2, ncy = (NS_Y0 + NS_Y1) / 2, vcx = VMC_X, vcy = VMC_Y;
+  for (let i = 0; i < RAIN_N; i++) {
+    const k = pK[i];
+    if (k < 0.45 && (i & 1)) continue;                              // far drops: a fixed sparse subset, no flicker
+    const L = 2 + ri(4 * k), x = pX[i], y = pY[i];
+    let c = k > 0.65 ? RN0 : RN1;
+    const dnx = (x - ncx) / 20, dny = (y - ncy) / 30, dvx = (x - vcx) / 16, dvy = (y - vcy) / 20;
+    if (nsOn && dnx * dnx + dny * dny < 1) c = NM0;                  // drops backlit by the neon
+    else if (dvx * dvx + dvy * dvy < 1) c = NC0;
+    for (let j = 0; j < L; j++) px(ri(x - 0.16 * j), ri(y - j), j === 0 ? c : (c === RN0 ? RN1 : c === RN1 ? RN1 : SHADE[c]));
+  }
+}
+function drawParticles() {
+  for (let i = RAIN_N; i < PN; i++) {
+    const ty = pType[i]; if (ty === 0) continue;
+    const x = ri(pX[i]), y = ri(pY[i]), a = pAge[i], z = pK[i];
+    if (ty === P_SPLASH) {
+      if (z < 9) { if (a < 0.06) { px(x - 1, y - 1, RN0); px(x + 1, y - 1, RN0); px(x, y - 2, RN1); } else { px(x - 1, y, RN1); px(x + 1, y, RN1); } }
+      else px(x, y - (a < 0.05 ? 1 : 0), fogPix(a < 0.06 ? RN0 : RN1, z, x, y));
+    } else if (ty === P_RIPPLE) {
+      const R = (z < 10 ? 3.2 : 2) * (a / pLife[i]), ry = Math.max(0.6, R * 0.35);
+      const c = fogPix(a < 0.25 ? GR0 : FOG2, z, x, y);
+      for (let s = 0; s < 12; s++) { const an = s * TAU / 12; px(ri(x + Math.cos(an) * R), ri(y + Math.sin(an) * ry), c); }
+    } else {
+      const r = 1.2 + a * 1.9;
+      glow(pX[i], pY[i], r, r * 0.8, LIGHT, 11 * (1 - a / pLife[i]));
+    }
+  }
+}
+// ATMOSPHERE heavy: ground-level mist bands drifting slowly (whole cycles per loop)
+const WISP_Z = new Float32Array([10.5, 16.5]);
+function drawWisps() {
+  for (let w = 0; w < WISP_Z.length; w++) {
+    const z = WISP_Z[w], cy = syp(0.35, z), hh = Math.max(1.5, 0.45 * F / z), drift = 26 * cyc(1, w * 2.1);
+    for (let y = Math.floor(cy - hh); y <= cy + hh; y++) {
+      if (y < IMG_TOP || y >= IMG_BOT) continue;
+      const fy = 1 - Math.abs(y - cy) / hh;
+      for (let x = 0; x < W; x++) {
+        const idx = y * W + x; if (SURF[idx] === S_SKY || ZB[idx] > 22) continue;          // keep mist off the fogged distance
+        const lvl = fy * (3 + 3 * Math.sin((x - drift) * 0.055 + w * 1.3));
+        if (lvl > bay(x, y)) FB[idx] = FOGL[FB[idx]];
+      }
+    }
+  }
+}
+
+// ---------- frame composition ----------
+function render() {
+  FB.set(BG);
+  target(FB, W, H);
+  drawReflections();
+  drawPools();
+  drawSigns();
+  drawWisps();
+  drawParticles();
+  drawSubjects();
+  drawRain();
+  drawForeground();
+  applyVignette(SHADE);
+  frameBars(K0);
+}
+
+// ---------- HD finish settings (core/hd.js): what glows, how much, and where the depth of field starts ----------
+const HD_EMIT = [[NM0, 1], [NM1, 0.85], [NM2, 0.3], [NC0, 1], [NC1, 0.8], [NC2, 0.28], [WT0, 0.9], [WT1, 0.35],
+  [AM0, 0.75], [AM1, 0.42], [AM2, 0.1], [FOG0, 0.14], [RN0, 0.1]];
+const HD_DEPTH = ZB, HD_DOF_NEAR = 24, HD_DOF_FAR = 48, HD_GLOW = 1;
+
+// ==========================================================================
+// HD FINISH (FINISH = hd) - an optional output stage. The pixel-art frame stays the base layer, crisp and exact
+// (an integer multiple of the logical resolution). On top of it, at 1080p or 4K, in WebGL2:
+//   glow     : the emissive palette colours (HD_EMIT) blurred at four scales: a tight neon halo plus a wide,
+//              faint scatter that reads as light in the air
+//   depth    : optional depth of field from a per-pixel depth buffer (HD_DEPTH), softening the far distance
+//   grade    : a soft shoulder for the glow, a slight cool-shadow / warm-highlight split, a smooth vignette,
+//              a faint lens fringe toward the corners and fine animated film grain
+// Controls: H toggles the finish, R switches 1080p / 4K; buttons export a PNG at the output size and record one
+// exact loop as WebM. Include after the scene chunks and before core_b. Falls back to the pixel output without WebGL2.
+// Scene inputs: HD_EMIT (array of [palette index, strength 0..1]); optional HD_DEPTH (Float32Array W*H),
+// HD_DOF_NEAR / HD_DOF_FAR (depths where the blur starts / is full), HD_GLOW (overall glow strength, default 1),
+// HD_DOF_DEEP (true: a two-stage focus for strong out-of-focus foregrounds; the first half of the range blends to a soft
+// copy, the second half on to a much softer one. Off by default, so existing scenes render exactly as before),
+// HD_SMOOTH (0..1: an edge-preserving de-dither of the frame, upscaled smoothly (Catmull-Rom), blended over the crisp
+// pixels by this amount. Absent = 0, the crisp pixel base as before).
+// ==========================================================================
+let GL = null, HDC = null, hdOn = true, hdRes = 1080, hdFrame = 0, hdProg = null, hdTex = null, hdFbo = null, hdVao = null;
+const HD_EM32 = new Uint32Array(W * H), HD_EM8 = new Uint8Array(HD_EM32.buffer), HD_EMLUT = new Uint32Array(256), HD_DOFB = new Uint8Array(W * H);
+// Light map: while the finish is on, a scene can hand its light pools over as smooth light instead of dithered
+// remaps (hdActive() tells it when). The compositor lights the crisp pixel texture with it at the output resolution.
+const HD_LM = new Uint8ClampedArray(W * H * 4);
+function hdActive() { return GL !== null && hdOn; }
+function hdLight(i, r, g, b, k) { const o = i << 2; HD_LM[o] += r * k; HD_LM[o + 1] += g * k; HD_LM[o + 2] += b * k; }
+let hdDofDirty = true, hdRec = null, hdRecState = 0, hdRecChunks = [], hdUI = null;
+const HD_LV = [[W >> 1, H >> 1], [W >> 2, H >> 2], [W >> 3, (H >> 3) + 1], [W >> 4, (H >> 4) + 1]];
+function hdShader(type, src) { const s = GL.createShader(type); GL.shaderSource(s, src); GL.compileShader(s); if (!GL.getShaderParameter(s, GL.COMPILE_STATUS)) throw new Error(GL.getShaderInfoLog(s)); return s; }
+function hdProgram(fs) {
+  const vs = '#version 300 es\nout vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2)*2.0-1.0;uv=p*0.5+0.5;gl_Position=vec4(p,0,1);}';
+  const p = GL.createProgram(); GL.attachShader(p, hdShader(GL.VERTEX_SHADER, vs)); GL.attachShader(p, hdShader(GL.FRAGMENT_SHADER, '#version 300 es\nprecision highp float;in vec2 uv;out vec4 o;' + fs)); GL.linkProgram(p);
+  if (!GL.getProgramParameter(p, GL.LINK_STATUS)) throw new Error(GL.getProgramInfoLog(p));
+  return p;
+}
+function hdTexture(w, h, fmt, filter) {
+  const t = GL.createTexture(); GL.bindTexture(GL.TEXTURE_2D, t);
+  GL.texImage2D(GL.TEXTURE_2D, 0, fmt === 1 ? GL.R8 : GL.RGBA8, w, h, 0, fmt === 1 ? GL.RED : GL.RGBA, GL.UNSIGNED_BYTE, null);
+  GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MIN_FILTER, filter); GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MAG_FILTER, filter);
+  GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_S, GL.CLAMP_TO_EDGE); GL.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_WRAP_T, GL.CLAMP_TO_EDGE);
+  return t;
+}
+function hdTarget(tex) { const f = GL.createFramebuffer(); GL.bindFramebuffer(GL.FRAMEBUFFER, f); GL.framebufferTexture2D(GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, tex, 0); return f; }
+function hdInit() {
+  const q = (typeof location !== 'undefined' ? location.search + '&' + location.hash : '');
+  if (/finish=pure/.test(q)) hdOn = false;
+  if (/res=(2160|4k)/i.test(q)) hdRes = 2160;
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return false;
+  HDC = document.createElement('canvas');
+  try { GL = HDC.getContext && HDC.getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true }); } catch (e) { GL = null; }
+  if (!GL || typeof GL.createShader !== 'function') { GL = null; return false; }   // no WebGL2 (or a headless stub): pixel output
+  HDC.id = 'hd'; HDC.style.cssText = 'position:fixed;left:0;top:0;';
+  document.body.appendChild(HDC);
+  for (let i = 0; i < 256; i++) HD_EMLUT[i] = 0xff000000;
+  const EM = typeof HD_EMIT !== 'undefined' ? HD_EMIT : [];
+  for (let k = 0; k < EM.length; k++) {
+    const c = PAL32[EM[k][0]], s = EM[k][1];
+    HD_EMLUT[EM[k][0]] = (0xff000000 | (Math.round(((c >> 16) & 255) * s) << 16) | (Math.round(((c >> 8) & 255) * s) << 8) | Math.round((c & 255) * s)) >>> 0;
+  }
+  // programs: 2x2 box down-sample, separable 9-tap gaussian, final composite
+  const pDown = hdProgram('uniform sampler2D s;uniform vec2 t;void main(){o=0.25*(texture(s,uv+t*vec2(-.5,-.5))+texture(s,uv+t*vec2(.5,-.5))+texture(s,uv+t*vec2(-.5,.5))+texture(s,uv+t*vec2(.5,.5)));}');
+  const pBlur = hdProgram('uniform sampler2D s;uniform vec2 d;void main(){vec4 a=texture(s,uv)*.2270;a+=(texture(s,uv+d*1.3846)+texture(s,uv-d*1.3846))*.3162;a+=(texture(s,uv+d*3.2308)+texture(s,uv-d*3.2308))*.0703;o=a;}');
+  // de-dither: a texel that differs from its neighbours on both axes (a dither or noise texel, not a line) takes the
+  // average of the 5x5 neighbours close in colour to the local mean, so patterns melt into smooth tone. One-pixel lines
+  // (log courses, rails) differ on one axis only and stay; very strong single texels (stars, sparks) stay too
+  const pSmooth = hdProgram('uniform sampler2D s;uniform vec2 t;float dd(vec3 a){return dot(a,a);}void main(){vec3 c=texture(s,uv).rgb,l=texture(s,uv-vec2(t.x,0)).rgb,r=texture(s,uv+vec2(t.x,0)).rgb,u=texture(s,uv-vec2(0,t.y)).rgb,d=texture(s,uv+vec2(0,t.y)).rgb;' +
+    'float eh=dd(c-(l+r)*.5),ev=dd(c-(u+d)*.5),k=smoothstep(.0004,.004,min(eh,ev))*(1.-smoothstep(.15,.35,max(eh,ev)));if(k<=0.){o=vec4(c,1);return;}' +
+    'vec3 m=vec3(0),a=vec3(0);float n=0.;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++)m+=texture(s,uv+vec2(x,y)*t).rgb;m/=9.;' +
+    'for(int y=-2;y<=2;y++)for(int x=-2;x<=2;x++){vec3 q=texture(s,uv+vec2(x,y)*t).rgb,e=q-m;float w=exp(-float(x*x+y*y)*.3-dot(e,e)*30.);a+=q*w;n+=w;}o=vec4(mix(c,a/n,k),1);}');
+  const pComp = hdProgram(`
+uniform sampler2D base,emit,l1,l2,l3,l4,d1,dof,lmap,d2,sm;uniform vec2 src,res;uniform float frm,glow,on,deep,smo;
+vec4 bicubic(sampler2D t,vec2 p){vec2 ts=vec2(textureSize(t,0));vec2 q=p*ts-.5;vec2 f=fract(q);vec2 i=floor(q);
+ vec2 w0=(1.-f)*(1.-f)*(1.-f)/6.,w1=(4.-6.*f*f+3.*f*f*f)/6.,w2=(1.+3.*f+3.*f*f-3.*f*f*f)/6.,w3=f*f*f/6.;
+ vec2 g0=w0+w1,g1=w2+w3,h0=(w1/g0-1.+i+.5)/ts,h1=(w3/g1+1.+i+.5)/ts;
+ return g0.y*(g0.x*texture(t,vec2(h0.x,h0.y))+g1.x*texture(t,vec2(h1.x,h0.y)))+g1.y*(g0.x*texture(t,vec2(h0.x,h1.y))+g1.x*texture(t,vec2(h1.x,h1.y)));}
+vec3 soft(vec2 p){vec2 q=p*src-.5,i=floor(q),f=q-i;                     // Catmull-Rom upscale of the de-dithered frame (9 taps)
+ vec2 w0=f*(-.5+f*(1.-.5*f)),w1=1.+f*f*(-2.5+1.5*f),w2=f*(.5+f*(2.-1.5*f)),w3=f*f*(-.5+.5*f),w12=w1+w2;
+ vec2 t0=(i-.5)/src,t3=(i+2.5)/src,t12=(i+.5+w2/w12)/src;
+ return (texture(sm,vec2(t0.x,t0.y)).rgb*w0.x+texture(sm,vec2(t12.x,t0.y)).rgb*w12.x+texture(sm,vec2(t3.x,t0.y)).rgb*w3.x)*w0.y
+  +(texture(sm,vec2(t0.x,t12.y)).rgb*w0.x+texture(sm,vec2(t12.x,t12.y)).rgb*w12.x+texture(sm,vec2(t3.x,t12.y)).rgb*w3.x)*w12.y
+  +(texture(sm,vec2(t0.x,t3.y)).rgb*w0.x+texture(sm,vec2(t12.x,t3.y)).rgb*w12.x+texture(sm,vec2(t3.x,t3.y)).rgb*w3.x)*w3.y;}
+float hash(vec2 p){p=fract(p*vec2(443.897,441.423));p+=dot(p,p.yx+19.19);return fract((p.x+p.y)*p.x);}
+void main(){
+ vec2 fc=gl_FragCoord.xy, p=fc/res; p.y=1.-p.y;              // textures are stored top row first
+ ivec2 tx=ivec2(floor(p*src));
+ vec3 c=texelFetch(base,tx,0).rgb;
+ if(on<.5){o=vec4(c,1);return;}
+ vec2 cc=p-.5; float r2=dot(cc,cc);
+ vec2 ca=cc*r2*1.6/src;                                   // lens fringe: red and blue separate slightly toward the corners
+ c.r=texelFetch(base,ivec2(floor((p+ca)*src)),0).r; c.b=texelFetch(base,ivec2(floor((p-ca)*src)),0).b;
+ if(smo>0.) c=mix(c,vec3(soft(p+ca).r,soft(p).g,soft(p-ca).b),smo);
+ float fd=texture(dof,p).r;                               // depth of field: the far distance softens
+ if(fd>0.){ if(deep>.5){ vec3 b1=bicubic(d1,p).rgb; c = fd<.5 ? mix(c,b1,fd*2.) : mix(b1,bicubic(d2,p).rgb,(fd-.5)*2.); } else c=mix(c,bicubic(d1,p).rgb,fd*.85); }
+ vec3 lm=texture(lmap,p).rgb; float li=clamp(dot(lm,vec3(.33))*2.2,0.,.6);
+ // where light falls strongly, fine dither in the texture is averaged with its neighbours so the wash reads clean,
+ // and the light is mostly additive (multiplying would amplify the dither it lands on)
+ li*=1.-smo;
+ if(li>0.){vec3 nb=(texelFetch(base,tx+ivec2(1,0),0).rgb+texelFetch(base,tx-ivec2(1,0),0).rgb+texelFetch(base,tx+ivec2(0,1),0).rgb+texelFetch(base,tx-ivec2(0,1),0).rgb)*.25;c=mix(c,(c+nb)*.5,li);}
+ float lmx=max(max(lm.r,lm.g),lm.b);                   // lit surfaces take the light's hue at their own brightness (the smooth
+ if(lmx>0.){vec3 hue=lm/lmx;float L=dot(c,vec3(.299,.587,.114));c=mix(c,hue*(L*1.8+.08),clamp(lmx*1.6,0.,.8));}   // form of the pixel colour tables)
+ c=c+c*lm*.8+lm*.45;
+ // (deep focus: the crisp part of the glow fades on the strongly out-of-focus foreground)
+ vec3 g=texture(emit,p).rgb*(deep>.5?.35-.35*smoothstep(.7,1.,fd):.35)+texture(l1,p).rgb*.75+bicubic(l2,p).rgb*.8+bicubic(l3,p).rgb*.7+bicubic(l4,p).rgb*.9;
+ c+=g*glow;
+ c=mix(c,vec3(.75)+(1.-exp(-(c-.75)*4.))*.25,step(.75,c));  // soft shoulder where the glow pushes past white
+ float l=dot(c,vec3(.299,.587,.114));
+ c+=vec3(-.012,-.004,.02)*(1.-smoothstep(0.,.35,l))+vec3(.018,.008,-.012)*smoothstep(.55,1.,l);
+ c*=1.-smoothstep(.18,.62,r2)*.35;                          // smooth vignette
+ c+=(hash(fc+frm*17.13)-.5)*.045;                           // film grain at the output resolution
+ o=vec4(c,1);}`);
+  hdProg = { down: pDown, blur: pBlur, comp: pComp, smooth: pSmooth };
+  // textures: pixel base (nearest), emission, blur levels (+ ping-pong), blurred base for depth of field, depth mask
+  const LIN = GL.LINEAR, NEA = GL.NEAREST;
+  hdTex = { lmap: hdTexture(W, H, 0, LIN), base: hdTexture(W, H, 0, NEA), emit: hdTexture(W, H, 0, LIN), dof: hdTexture(W, H, 1, LIN), lv: [], tmp: [], d1: hdTexture(HD_LV[0][0], HD_LV[0][1], 0, LIN), d1t: hdTexture(HD_LV[0][0], HD_LV[0][1], 0, LIN), d2: hdTexture(HD_LV[1][0], HD_LV[1][1], 0, LIN), d2t: hdTexture(HD_LV[1][0], HD_LV[1][1], 0, LIN), sm: hdTexture(W, H, 0, LIN), smt: hdTexture(W, H, 0, LIN) };
+  hdFbo = { lv: [], tmp: [], d1: hdTarget(hdTex.d1), d1t: hdTarget(hdTex.d1t), d2: hdTarget(hdTex.d2), d2t: hdTarget(hdTex.d2t), sm: hdTarget(hdTex.sm), smt: hdTarget(hdTex.smt) };
+  for (let k = 0; k < 4; k++) { hdTex.lv[k] = hdTexture(HD_LV[k][0], HD_LV[k][1], 0, LIN); hdTex.tmp[k] = hdTexture(HD_LV[k][0], HD_LV[k][1], 0, LIN); hdFbo.lv[k] = hdTarget(hdTex.lv[k]); hdFbo.tmp[k] = hdTarget(hdTex.tmp[k]); }
+  GL.bindFramebuffer(GL.FRAMEBUFFER, null);
+  hdVao = GL.createVertexArray();
+  hdAddUI();
+  window.addEventListener('keydown', (e) => { if (e.code === 'KeyH') { hdOn = !hdOn; hdUpdateUI(); } else if (e.code === 'KeyR') { hdRes = hdRes === 1080 ? 2160 : 1080; hdResize(); hdUpdateUI(); } });
+  return true;
+}
+function hdResize() {
+  const ow = Math.round(W * hdRes / H), oh = hdRes;                  // 320x180 -> 1920x1080 (x6) or 3840x2160 (x12)
+  HDC.width = ow; HDC.height = oh;
+  const s = Math.min(innerWidth / ow, innerHeight / oh), cw = Math.floor(ow * s), ch = Math.floor(oh * s);
+  HDC.style.width = cw + 'px'; HDC.style.height = ch + 'px'; HDC.style.left = Math.floor((innerWidth - cw) / 2) + 'px'; HDC.style.top = Math.floor((innerHeight - ch) / 2) + 'px';
+  const bg = document.getElementById('screen'); if (bg) bg.style.visibility = 'hidden';
+  document.body.style.background = '#000';
+}
+function hdPass(prog, fbo, w, h, tex, u2name, u2x, u2y) {
+  GL.bindFramebuffer(GL.FRAMEBUFFER, fbo); GL.viewport(0, 0, w, h); GL.useProgram(prog);
+  GL.activeTexture(GL.TEXTURE0); GL.bindTexture(GL.TEXTURE_2D, tex); GL.uniform1i(GL.getUniformLocation(prog, 's'), 0);
+  GL.uniform2f(GL.getUniformLocation(prog, u2name), u2x, u2y);
+  GL.drawArrays(GL.TRIANGLES, 0, 3);
+}
+function hdPresent() {
+  GL.bindVertexArray(hdVao);
+  // upload: the palette-expanded frame (core_b's ImageData), its emission, and the depth-of-field mask when it changes
+  for (let i = 0; i < W * H; i++) HD_EM32[i] = HD_EMLUT[FB[i]];
+  GL.bindTexture(GL.TEXTURE_2D, hdTex.base); GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, W, H, GL.RGBA, GL.UNSIGNED_BYTE, img.data);
+  GL.bindTexture(GL.TEXTURE_2D, hdTex.emit); GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, W, H, GL.RGBA, GL.UNSIGNED_BYTE, HD_EM8);
+  GL.bindTexture(GL.TEXTURE_2D, hdTex.lmap); GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, W, H, GL.RGBA, GL.UNSIGNED_BYTE, HD_LM); HD_LM.fill(0);
+  if (hdDofDirty) {
+    hdDofDirty = false;
+    const Z = typeof HD_DEPTH !== 'undefined' ? HD_DEPTH : null, n0 = typeof HD_DOF_NEAR !== 'undefined' ? HD_DOF_NEAR : 1e9, n1 = typeof HD_DOF_FAR !== 'undefined' ? HD_DOF_FAR : 1e9;
+    for (let i = 0; i < W * H; i++) HD_DOFB[i] = Z ? Math.round(clamp((Z[i] - n0) / (n1 - n0), 0, 1) * 255) : 0;
+    GL.pixelStorei(GL.UNPACK_ALIGNMENT, 1);
+    GL.bindTexture(GL.TEXTURE_2D, hdTex.dof); GL.texSubImage2D(GL.TEXTURE_2D, 0, 0, 0, W, H, GL.RED, GL.UNSIGNED_BYTE, HD_DOFB);
+  }
+  if (hdOn) {
+    // glow chain: down-sample the emission four times, blurring each level (horizontal then vertical)
+    let src = hdTex.emit, sw = W, sh = H;
+    for (let k = 0; k < 4; k++) {
+      const w = HD_LV[k][0], h = HD_LV[k][1];
+      hdPass(hdProg.down, hdFbo.lv[k], w, h, src, 't', 1 / sw, 1 / sh);
+      hdPass(hdProg.blur, hdFbo.tmp[k], w, h, hdTex.lv[k], 'd', 1 / w, 0);
+      hdPass(hdProg.blur, hdFbo.lv[k], w, h, hdTex.tmp[k], 'd', 0, 1 / h);
+      src = hdTex.lv[k]; sw = w; sh = h;
+    }
+    if (typeof HD_SMOOTH !== 'undefined' && HD_SMOOTH > 0) {          // de-dither, twice
+      hdPass(hdProg.smooth, hdFbo.smt, W, H, hdTex.base, 't', 1 / W, 1 / H);
+      hdPass(hdProg.smooth, hdFbo.sm, W, H, hdTex.smt, 't', 1 / W, 1 / H);
+    }
+    // softened copy of the frame for depth of field
+    hdPass(hdProg.down, hdFbo.d1, HD_LV[0][0], HD_LV[0][1], hdTex.base, 't', 1 / W, 1 / H);
+    hdPass(hdProg.blur, hdFbo.d1t, HD_LV[0][0], HD_LV[0][1], hdTex.d1, 'd', 1 / HD_LV[0][0], 0);
+    hdPass(hdProg.blur, hdFbo.d1, HD_LV[0][0], HD_LV[0][1], hdTex.d1t, 'd', 0, 1 / HD_LV[0][1]);
+    if (typeof HD_DOF_DEEP !== 'undefined' && HD_DOF_DEEP) {         // a much softer copy for the deep focus mode
+      hdPass(hdProg.down, hdFbo.d2, HD_LV[1][0], HD_LV[1][1], hdTex.d1, 't', 1 / HD_LV[0][0], 1 / HD_LV[0][1]);
+      hdPass(hdProg.blur, hdFbo.d2t, HD_LV[1][0], HD_LV[1][1], hdTex.d2, 'd', 1.5 / HD_LV[1][0], 0);
+      hdPass(hdProg.blur, hdFbo.d2, HD_LV[1][0], HD_LV[1][1], hdTex.d2t, 'd', 0, 1.5 / HD_LV[1][1]);
+    }
+  }
+  // composite at the output resolution
+  const P = hdProg.comp;
+  GL.bindFramebuffer(GL.FRAMEBUFFER, null); GL.viewport(0, 0, HDC.width, HDC.height); GL.useProgram(P);
+  const names = ['base', 'emit', 'l1', 'l2', 'l3', 'l4', 'd1', 'dof', 'lmap', 'd2', 'sm'], texs = [hdTex.base, hdTex.emit, hdTex.lv[0], hdTex.lv[1], hdTex.lv[2], hdTex.lv[3], hdTex.d1, hdTex.dof, hdTex.lmap, hdTex.d2, hdTex.sm];
+  for (let k = 0; k < 11; k++) { GL.activeTexture(GL.TEXTURE0 + k); GL.bindTexture(GL.TEXTURE_2D, texs[k]); GL.uniform1i(GL.getUniformLocation(P, names[k]), k); }
+  GL.uniform2f(GL.getUniformLocation(P, 'src'), W, H); GL.uniform2f(GL.getUniformLocation(P, 'res'), HDC.width, HDC.height);
+  GL.uniform1f(GL.getUniformLocation(P, 'frm'), (hdFrame++) % 997); GL.uniform1f(GL.getUniformLocation(P, 'glow'), typeof HD_GLOW !== 'undefined' ? HD_GLOW : 1);
+  GL.uniform1f(GL.getUniformLocation(P, 'on'), hdOn ? 1 : 0);
+  GL.uniform1f(GL.getUniformLocation(P, 'smo'), typeof HD_SMOOTH !== 'undefined' ? HD_SMOOTH : 0);
+  GL.uniform1f(GL.getUniformLocation(P, 'deep'), typeof HD_DOF_DEEP !== 'undefined' && HD_DOF_DEEP ? 1 : 0);
+  GL.drawArrays(GL.TRIANGLES, 0, 3);
+  hdRecTick();
+}
+// ---- export: a PNG of the output frame, and one exact loop recorded as WebM (starts and stops at frame 0) ----
+function hdName(ext) { return TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + (hdOn ? 'hd-' : 'pixel-') + hdRes + 'p.' + ext; }
+function hdSave(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
+function hdPNG() { HDC.toBlob((b) => hdSave(b, hdName('png')), 'image/png'); }
+function hdRecordLoop() {
+  if (hdRecState || typeof MediaRecorder === 'undefined') return;
+  const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  let mt = ''; for (let k = 0; k < types.length; k++) if (MediaRecorder.isTypeSupported(types[k])) { mt = types[k]; break; }
+  hdRec = new MediaRecorder(HDC.captureStream(60), { mimeType: mt, videoBitsPerSecond: hdRes === 2160 ? 80e6 : 30e6 });
+  hdRecChunks = []; hdRec.ondataavailable = (e) => { if (e.data.size) hdRecChunks.push(e.data); };
+  hdRec.onstop = () => { hdSave(new Blob(hdRecChunks, { type: 'video/webm' }), hdName('webm')); hdRecState = 0; hdUpdateUI(); };
+  hdRecState = 1; hdUpdateUI();                                     // armed: recording starts when the loop wraps to frame 0
+}
+let hdPrevFrame = 0;
+function hdRecTick() {
+  if (hdRecState === 1 && frame < hdPrevFrame) { hdRec.start(250); hdRecState = 2; }
+  else if (hdRecState === 2 && frame < hdPrevFrame) { hdRec.stop(); hdRecState = 3; }
+  if (hdRecState === 2 && hdUI) hdUI.rec.textContent = 'Recording ' + (frame / 60).toFixed(1) + ' / ' + (LOOP_FRAMES / 60).toFixed(1) + ' s';
+  hdPrevFrame = frame;
+}
+function hdAddUI() {
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;right:10px;bottom:10px;display:flex;gap:6px;opacity:.4;transition:opacity .2s;font:12px/1 system-ui,sans-serif;z-index:2';
+  bar.onmouseenter = () => { bar.style.opacity = 1; }; bar.onmouseleave = () => { bar.style.opacity = 0.4; };
+  const mk = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; b.style.cssText = 'background:#1b1a24;color:#e8e4f0;border:1px solid #3a3850;padding:6px 10px;cursor:pointer'; bar.appendChild(b); return b; };
+  hdUI = {
+    fin: mk('', () => { hdOn = !hdOn; hdUpdateUI(); }),
+    res: mk('', () => { hdRes = hdRes === 1080 ? 2160 : 1080; hdResize(); hdUpdateUI(); }),
+    png: mk('PNG', hdPNG),
+    rec: mk('', hdRecordLoop)
+  };
+  document.body.appendChild(bar); hdUpdateUI();
+}
+function hdUpdateUI() {
+  if (!hdUI) return;
+  hdUI.fin.textContent = hdOn ? 'Finish: HD (H)' : 'Finish: pixel (H)';
+  hdUI.res.textContent = hdRes === 1080 ? '1080p (R)' : '4K (R)';
+  hdUI.rec.textContent = hdRecState === 1 ? 'Waiting for loop start…' : hdRecState >= 2 ? 'Recording…' : 'Record loop (WebM)';
+}
+
+// ==========================================================================
+// CORE B - shared engine: output, fixed-step loop, debug keys, PNG export
+// (expects bake(), update(), render() from the scene)
+// ==========================================================================
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H), out32 = new Uint32Array(img.data.buffer);
+const HDM = typeof hdInit === 'function' ? hdInit() : false;          // optional HD finish (core/hd.js) takes over the output
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  if (HDM) { hdResize(); return; }
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.floor(innerWidth * dpr)), chh = Math.max(1, Math.floor(innerHeight * dpr));
+  canvas.width = cw; canvas.height = chh;
+  canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+  scale = Math.max(1, Math.floor(Math.min(cw / W, chh / H)));
+  offX = Math.floor((cw - W * scale) / 2); offY = Math.floor((chh - H * scale) / 2);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, chh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[FB[i]];
+  octx.putImageData(img, 0, 0);
+  if (HDM) { hdPresent(); return; }
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+function simStep() { frame = (frame + 1) % LOOP_FRAMES; gT = frame / 60; update(); }
+
+function savePNG(mult) {
+  const c = document.createElement('canvas'); c.width = W * mult; c.height = H * mult;
+  const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
+  g.drawImage(off, 0, 0, W, H, 0, 0, W * mult, H * mult);
+  c.toBlob((b) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = TITLE.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + mult + 'x.png';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/png');
+}
+function addExport() {
+  const bar = document.createElement('div'); bar.id = 'export';
+  for (let k = 0; k < EXPORT_SCALES.length; k++) {
+    const m = EXPORT_SCALES[k], b = document.createElement('button');
+    b.textContent = 'PNG ' + m + '×'; b.onclick = () => savePNG(m);
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+}
+
+// ---- boot: bake static layers, pre-roll one loop, optional seek ----
+bake();
+for (let i = 0; i < LOOP_FRAMES; i++) simStep();                 // stateful systems reach steady state
+let startF = OUTPUT_MODE === 'still' ? ri(STILL_T * 60) % LOOP_FRAMES : 0;
+const seekM = /t=(\d+(?:\.\d+)?)/.exec(location.hash);
+if (seekM) startF = Math.floor(parseFloat(seekM[1]) * 60) % LOOP_FRAMES;
+for (let i = 0; i < startF; i++) simStep();
+resize();
+window.addEventListener('resize', () => { resize(); present(); });
+
+if (OUTPUT_MODE === 'still') {
+  render(); present();
+  if (EXPORT_SCALES.length) addExport();
+} else {
+  let last = performance.now(), acc = 0, paused = false;
+  const tick = (now) => {
+    let dt = (now - last) / 1000; last = now;
+    if (dt > 0.25) dt = 0.25; else if (dt < 0) dt = 0;
+    if (!paused) { acc += dt; while (acc >= STEP) { simStep(); acc -= STEP; } }
+    render(); present();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  if (DEBUG_KEYS) window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { paused = !paused; e.preventDefault(); }
+    else if (paused && e.code === 'ArrowRight') simStep();
+    else if (paused && e.code === 'ArrowLeft') for (let i = 0; i < LOOP_FRAMES - 1; i++) simStep();
+  });
+  if (EXPORT_SCALES.length) addExport();
+}
+})();
+</script>
+</body>
+</html>

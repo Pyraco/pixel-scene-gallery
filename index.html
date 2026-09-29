@@ -1,0 +1,277 @@
+<!doctype html><html lang="en"><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Pixel Scene Test Reel</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #e6e3ed; --panel: #f5f4f8; --panel2: #ebe8f1; --ink: #1d1a26; --mute: #5c5770; --line: #cfcad9;
+    --accent: #8a5a00; --accent-soft: #f2c23033; --screen: #0e0d14; --screen-ink: #ece7f4;
+    --display: 'Silkscreen', 'Courier New', monospace; --body: 'IBM Plex Sans', system-ui, sans-serif; --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark;
+    --bg: #111018; --panel: #1a1823; --panel2: #221f2d; --ink: #ece7f4; --mute: #a19bb2; --line: #2e2b3b; --accent: #f2c230; --accent-soft: #f2c2301f; } }
+  :root[data-theme="dark"] { color-scheme: dark;
+    --bg: #111018; --panel: #1a1823; --panel2: #221f2d; --ink: #ece7f4; --mute: #a19bb2; --line: #2e2b3b; --accent: #f2c230; --accent-soft: #f2c2301f; }
+  * { box-sizing: border-box; }
+  main > *, section > *, .groups > *, .groups > * > * { min-width: 0; }
+  body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); padding-inline: 16px; padding-block: 28px 64px; }
+  main { max-width: 1240px; margin: 0 auto; display: grid; gap: 40px; }
+  h1, h2 { font-family: var(--display); font-weight: 400; letter-spacing: .02em; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(26px, 4.4vw, 42px); line-height: 1.1; }
+  h2 { font-size: 18px; color: var(--accent); }
+  h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  p { margin: 0; }
+  .lede { max-width: 68ch; color: var(--mute); }
+  .cta { color: var(--accent); font-weight: 600; }
+  code, .code { font-family: var(--mono); font-size: 12px; }
+  header { display: grid; gap: 12px; }
+  .eyebrow { font: 500 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--mute); }
+  /* player */
+  .player { display: grid; gap: 10px; }
+  .screen { position: relative; aspect-ratio: 16 / 9; max-width: 100%; background: var(--screen); border-radius: 6px; overflow: hidden; }
+  .screen iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  .now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; }
+  .now strong { font-size: 16px; }
+  .now .code { color: var(--mute); overflow-wrap: anywhere; }
+  .now a { color: var(--accent); font-size: 13px; }
+  .hint { color: var(--mute); font-size: 13px; }
+  /* sections */
+  section { display: grid; gap: 14px; }
+  .sechead { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+  .sechead p { color: var(--mute); max-width: 72ch; font-size: 14px; }
+  .toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .toggle button { font: 500 13px var(--body); background: var(--panel); color: var(--ink); border: 0; padding: 7px 12px; cursor: pointer; }
+  .toggle button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  .quad { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 960px) { .quad { grid-template-columns: repeat(2, 1fr); } }
+  .card { display: grid; gap: 8px; align-content: start; text-align: left; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: inherit; cursor: pointer; }
+  .card:hover, .card:focus-visible { border-color: var(--accent); }
+  .card.playing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .thumb { position: relative; aspect-ratio: 16 / 9; max-width: 100%; background: var(--screen); border-radius: 3px; overflow: hidden; }
+  .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; object-fit: cover; }
+  .thumb img.a { opacity: 0; transition: opacity .12s; }
+  .ab .thumb:hover img.a { opacity: 1; }
+  .ab .thumb::after { content: 'hover: reference'; position: absolute; left: 6px; bottom: 6px; font: 500 10px var(--mono); color: var(--screen-ink); background: #0009; padding: 1px 5px; border-radius: 3px; }
+  .ab .thumb:hover::after { content: 'reference'; color: #f2c230; }
+  .card .note { font-size: 13px; color: var(--mute); }
+  .card .meta { font: 11px var(--mono); color: var(--mute); font-variant-numeric: tabular-nums; }
+  .groups { display: grid; gap: 22px; }
+  .groups h3 { font: 500 12px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--mute); }
+  /* matrices */
+  .mxwrap { overflow-x: auto; }
+  .mx { display: grid; grid-template-columns: 92px repeat(4, minmax(150px, 1fr)); gap: 6px; min-width: 700px; }
+  .mx .h { font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--mute); align-self: end; padding-bottom: 2px; }
+  .mx .r { font-size: 13px; font-weight: 600; align-self: center; }
+  .mx button { padding: 0; border: 1px solid var(--line); border-radius: 3px; background: var(--screen); cursor: pointer; aspect-ratio: 16 / 9; overflow: hidden; position: relative; }
+  .mx button img { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; object-fit: cover; }
+  .mx button:hover, .mx button.playing { border-color: var(--accent); }
+  /* made from the prompt: one featured scene, a large still beside its copy, chips that play each beat */
+  .feature { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 18px; align-items: start; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  @media (max-width: 760px) { .feature { grid-template-columns: minmax(0, 1fr); } }
+  .feature .still { padding: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--screen); cursor: pointer; display: block; width: 100%; }
+  .feature .still:hover, .feature .still.playing { border-color: var(--accent); }
+  .feature .still .thumb img { image-rendering: auto; }
+  .fcopy { display: grid; gap: 10px; align-content: start; }
+  .fcopy h3 { font: 400 20px/1.2 var(--display); letter-spacing: .02em; }
+  .fcopy .note { color: var(--mute); font-size: 14px; max-width: 60ch; }
+  .fcopy .meta { font: 11px var(--mono); color: var(--mute); }
+  .beats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .beats button { font: 500 13px var(--body); background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 7px 11px; cursor: pointer; display: inline-flex; gap: 8px; align-items: baseline; }
+  .beats button span { font: 11px var(--mono); color: var(--mute); font-variant-numeric: tabular-nums; }
+  .beats button:hover, .beats button.playing { border-color: var(--accent); color: var(--accent); }
+  footer { color: var(--mute); font-size: 13px; max-width: 80ch; display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 16px; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } body { font-size: 14px; } }
+  @media (prefers-reduced-motion: reduce) { .thumb img.a { transition: none; } }
+  /* hub: page links, the two collections, contents of the engine reel */
+  .topnav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+  .topnav .brand { font: 400 15px var(--display); color: var(--ink); text-decoration: none; }
+  .topnav .links { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .topnav .links a { color: var(--mute); text-decoration: none; font-size: 14px; }
+  .topnav .links a:hover, .topnav .links a[aria-current] { color: var(--accent); }
+  .pill { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; background: var(--accent-soft); color: var(--accent); padding: 1px 6px; border-radius: 10px; vertical-align: 2px; }
+  .collections { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 14px; }
+  @media (max-width: 760px) { .collections { grid-template-columns: minmax(0, 1fr); } }
+  .collside { display: grid; gap: 14px; }
+  .coll { display: grid; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; color: var(--ink); text-decoration: none; }
+  .coll:hover, .coll:focus-visible { border-color: var(--accent); }
+  .mosaic { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; background: var(--screen); }
+  .mosaic img { width: 100%; max-width: 100%; aspect-ratio: 16 / 9; object-fit: cover; image-rendering: pixelated; display: block; }
+  .ccopy { display: grid; gap: 8px; padding: 14px; align-content: start; }
+  .ccopy h2 { font-size: 20px; color: var(--ink); }
+  .ccopy p { color: var(--mute); font-size: 14px; max-width: 62ch; }
+  .contents { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .contents span { color: var(--mute); font-size: 13px; margin-right: 4px; }
+  .contents a { font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 4px 11px; text-decoration: none; }
+  .contents a:hover, .contents a:focus-visible { border-color: var(--accent); color: var(--accent); }
+  section[id], header[id] { scroll-margin-top: 12px; }
+  .enginehead { border-top: 1px solid var(--line); padding-top: 28px; }
+  .enginehead .big { font-family: var(--display); font-weight: 400; font-size: clamp(22px, 3.4vw, 34px); line-height: 1.15; color: var(--ink); }
+
+</style>
+<main>
+
+  <nav class="topnav" aria-label="Gallery pages">
+    <a class="brand" href="index.html">Pixel Scene Test Reel</a>
+    <div class="links"><a href="#engine">Engine reel</a><a href="studio-gallery.html">Pixel Studio scenes <span class="pill">new</span></a><a href="studio.html" target="_blank" rel="noopener">Open the Studio</a></div>
+  </nav>
+  <header class="hub">
+    <span class="eyebrow">Pixel scene gallery</span>
+    <h1>Two ways to paint a pixel scene</h1>
+    <p class="lede">The newest work is Pixel Studio: painterly, high-detail pixel scenes built from plain settings. Its eight scenes and their 32 variants have their own page, with the prompt and settings behind every picture. Further down is the original engine&#8217;s test reel, where each scene is hand-built code on a fixed palette.</p>
+  </header>
+  <section class="collections" aria-label="Collections">
+    <a class="coll" href="studio-gallery.html">
+      <div class="mosaic"><img alt="" src="v/meadow-base.png"><img alt="" src="v/noir-base.png"><img alt="" src="v/reef-base.png"><img alt="" src="v/night-base.png"><img alt="" src="v/coast-base.png"><img alt="" src="v/market-base.png"><img alt="" src="v/siege-base.png"><img alt="" src="v/desert-base.png"></div>
+      <div class="ccopy"><span class="eyebrow">New &#183; Pixel Studio</span><h2>Pixel Studio scenes</h2><p>Countryside, a noir city, a coral reef, a starry night, a sunset coast, a village market full of people, a castle siege and a desert. Each has a baseline and three variants; every one plays live and lists the settings that paint it.</p><span class="cta">See all 32 variants &#8594;</span></div>
+    </a>
+    <div class="collside">
+      <a class="coll" href="studio.html" target="_blank" rel="noopener"><div class="ccopy"><span class="eyebrow">The app</span><h2>Open the Studio</h2><p>Describe a scene in your own words or pick a type, then change the light, weather, season and features. Every setting says what it does.</p><span class="cta">Open it &#8594;</span></div></a>
+      <a class="coll" href="#engine"><div class="ccopy"><span class="eyebrow">The original engine</span><h2>Engine test reel</h2><p>Harbour Lights in four projections, every option on its own, the HD finish, and the underwater, cave and space tests.</p><span class="cta">Jump down &#8595;</span></div></a>
+    </div>
+  </section>
+  <nav class="contents" aria-label="Engine reel contents"><span>In the engine reel:</span><a href="#s-made">Made from the prompt</a><a href="#s-proj">Projections</a><a href="#s-mats">Time and weather</a><a href="#s-opts">One option at a time</a><a href="#s-hd">HD finish</a><a href="#s-looks">Shared look</a><a href="#s-envs">Environments</a><a href="#s-earlier">Earlier scenes</a></nav>
+
+  <header id="engine" class="enginehead">
+    <span class="eyebrow">The original engine &#183; test reel</span>
+    <h2 class="big">Harbour Lights, every way it can be drawn</h2>
+    <p class="lede">One fishing-harbour story rendered by a pixel-art scene prompt in four projections, then with each option changed on its own: time of day, weather, characters, camera, dithering, palette, lamp strength and more. Three more scenes cover underwater, underground and space, and the newest, Underwater Temple, was generated straight from a filled-in prompt. Every scene is live code on a 320&#215;180 canvas with a fixed palette. Pick any thumbnail to play it.</p>
+    <p class="lede"><a class="cta" href="https://claude.ai/artifact/NUaQmn7Q9JxAc1NF3eDQov" target="_blank" rel="noopener">Compose your own scene</a>: choose the options, start from any of these scenes, and copy the finished prompt.</p>
+  </header>
+
+  <div class="player" id="player">
+    <div class="screen"><iframe id="scr" title="Live scene" loading="eager" src="scenes/harbour-lights.html"></iframe></div>
+    <div class="now"><strong id="nowName">Harbour Lights &#183; side view (reference)</strong><span class="code" id="nowCode">no options: golden hour, clear, 2 characters, dolly camera</span><a id="nowOpen" href="scenes/harbour-lights.html" target="_blank" rel="noopener">Open on its own</a></div>
+    <p class="hint">Every scene loops seamlessly (the harbour runs 64 seconds). Click the scene, then press Space to pause and the arrow keys to step frames.</p>
+  </div>
+
+  <section id="s-made">
+    <div class="sechead"><h2>Made from the prompt</h2><p>Generated straight from a filled-in copy of the prompt, with no hand-built reference scene behind it. Tap the still to play it above, or jump to a beat.</p></div>
+    <div id="made"></div>
+  </section>
+
+  <section id="s-proj">
+    <div class="sechead"><h2>Four projections</h2><p>The same timeline, palette and options, drawn side-on, in perspective, from above and as an isometric diorama.</p></div>
+    <div class="grid quad" id="proj"></div>
+  </section>
+
+  <section id="s-mats">
+    <div class="sechead"><h2>Projection &#215; time and weather</h2>
+      <div class="toggle" role="group" aria-label="Moment shown in thumbnails"><button type="button" data-m="0" aria-pressed="false">Opening &#183; 2 s</button><button type="button" data-m="1" aria-pressed="true">Fish toss &#183; 30.2 s</button></div></div>
+    <div id="mats" class="groups"></div>
+  </section>
+
+  <section id="s-opts">
+    <div class="sechead"><h2>One option at a time</h2><p>Side view. Each card changes a single option from the reference; hover a thumbnail to compare it with the reference at the same moment.</p></div>
+    <div class="groups ab" id="groups"></div>
+  </section>
+
+  <section id="s-hd">
+    <div class="sechead"><h2>HD finish</h2><p>An optional output stage: the pixel frame stays the base layer at an exact 6x (1080p) or 12x (4K), and a GPU pass adds smooth light, glow, depth of field and a grade. In the player, press H to compare, R for 4K; opened on its own it saves PNGs and records the loop as video.</p></div>
+    <div class="grid" id="hd"></div>
+  </section>
+
+  <section id="s-looks">
+    <div class="sechead"><h2>One look, two places</h2><p>Neon Rain's lighting recipe, extracted into a shared kit and a single option (LOOK = neon-noir), then reused for a different scene in a different projection.</p></div>
+    <div class="grid" id="looks"></div>
+  </section>
+
+  <section id="s-envs">
+    <div class="sechead"><h2>New environments</h2><p>Three scenes for the settings the harbour can't show: underwater, underground and space. Each also tests something new.</p></div>
+    <div class="grid" id="envs"></div>
+  </section>
+
+  <section id="s-earlier">
+    <div class="sechead"><h2>Earlier test scenes</h2><p>The scenes that came before the harbour, used to test each projection for the first time.</p></div>
+    <div class="grid quad" id="earlier"></div>
+  </section>
+
+  <footer>
+    <p>Checked headless for every variant: frame cost (all under 1.2 ms against the 16.7 ms budget for 60 fps), zero pixels outside the palette, and a loop seam about the size of an ordinary frame-to-frame change, so the loop point is invisible.</p>
+    <p>Stills export PNGs when a scene is opened on its own; downloads are blocked inside this page.</p>
+  </footer>
+</main>
+<script>
+
+// short links for phones: ...#studio opens the Pixel Studio scenes, ...#app opens the Studio
+if (location.hash === '#studio') location.replace('studio-gallery.html');
+else if (location.hash === '#app') location.replace('studio.html');
+
+const D = {"moments":[2,30.2],"ref":["shots/harbour-lights_ref-ref_t2.png","shots/harbour-lights_ref-ref_t30.2.png"],"projections":[{"id":"proj-side","name":"Side view","note":"The reference: five parallax layers; the camera dollies in, follows him and pushes in for the toss.","scene":"harbour-lights","q":"","img":["shots/harbour-lights_proj-side_t2.png","shots/harbour-lights_proj-side_t30.2.png"],"metric":"0.722 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.23% (normal \u2264 4.55%)"},{"id":"proj-depth","name":"Depth","note":"One-point perspective down the quay into the sunset, drawn at fixed size tiers, with 3D-distance lamp pools.","scene":"harbour-depth","q":"","img":["shots/harbour-depth_proj-depth_t2.png","shots/harbour-depth_proj-depth_t30.2.png"],"metric":"0.519 ms/frame \u00b7 off-palette 0 \u00b7 seam 1.13% (normal \u2264 1.69%)"},{"id":"proj-topdown","name":"Top-down","note":"Three-quarter map with a pixel-stable follow camera and the lighthouse beam sweeping the water.","scene":"harbour-topdown","q":"","img":["shots/harbour-topdown_proj-topdown_t2.png","shots/harbour-topdown_proj-topdown_t30.2.png"],"metric":"0.436 ms/frame \u00b7 off-palette 0 \u00b7 seam 0.69% (normal \u2264 0.74%)"},{"id":"proj-iso","name":"Isometric","note":"A 2:1 floating diorama: water, quay and front props baked as separate layers around the characters.","scene":"harbour-iso","q":"","img":["shots/harbour-iso_proj-iso_t2.png","shots/harbour-iso_proj-iso_t30.2.png"],"metric":"0.735 ms/frame \u00b7 off-palette 0 \u00b7 seam 0.68% (normal \u2264 0.67%)"}],"matrices":[{"key":"time","title":"Time of day","vals":["golden","midday","night","overcast"],"rows":[{"name":"Side view","cells":[{"scene":"harbour-lights","q":"","img":["shots/harbour-lights_mx-side-time-golden_t2.png","shots/harbour-lights_mx-side-time-golden_t30.2.png"]},{"scene":"harbour-lights","q":"time=midday","img":["shots/harbour-lights_mx-side-time-midday_t2.png","shots/harbour-lights_mx-side-time-midday_t30.2.png"]},{"scene":"harbour-lights","q":"time=night","img":["shots/harbour-lights_mx-side-time-night_t2.png","shots/harbour-lights_mx-side-time-night_t30.2.png"]},{"scene":"harbour-lights","q":"time=overcast","img":["shots/harbour-lights_mx-side-time-overcast_t2.png","shots/harbour-lights_mx-side-time-overcast_t30.2.png"]}]},{"name":"Depth","cells":[{"scene":"harbour-depth","q":"","img":["shots/harbour-depth_mx-depth-time-golden_t2.png","shots/harbour-depth_mx-depth-time-golden_t30.2.png"]},{"scene":"harbour-depth","q":"time=midday","img":["shots/harbour-depth_mx-depth-time-midday_t2.png","shots/harbour-depth_mx-depth-time-midday_t30.2.png"]},{"scene":"harbour-depth","q":"time=night","img":["shots/harbour-depth_mx-depth-time-night_t2.png","shots/harbour-depth_mx-depth-time-night_t30.2.png"]},{"scene":"harbour-depth","q":"time=overcast","img":["shots/harbour-depth_mx-depth-time-overcast_t2.png","shots/harbour-depth_mx-depth-time-overcast_t30.2.png"]}]},{"name":"Top-down","cells":[{"scene":"harbour-topdown","q":"","img":["shots/harbour-topdown_mx-topdown-time-golden_t2.png","shots/harbour-topdown_mx-topdown-time-golden_t30.2.png"]},{"scene":"harbour-topdown","q":"time=midday","img":["shots/harbour-topdown_mx-topdown-time-midday_t2.png","shots/harbour-topdown_mx-topdown-time-midday_t30.2.png"]},{"scene":"harbour-topdown","q":"time=night","img":["shots/harbour-topdown_mx-topdown-time-night_t2.png","shots/harbour-topdown_mx-topdown-time-night_t30.2.png"]},{"scene":"harbour-topdown","q":"time=overcast","img":["shots/harbour-topdown_mx-topdown-time-overcast_t2.png","shots/harbour-topdown_mx-topdown-time-overcast_t30.2.png"]}]},{"name":"Isometric","cells":[{"scene":"harbour-iso","q":"","img":["shots/harbour-iso_mx-iso-time-golden_t2.png","shots/harbour-iso_mx-iso-time-golden_t30.2.png"]},{"scene":"harbour-iso","q":"time=midday","img":["shots/harbour-iso_mx-iso-time-midday_t2.png","shots/harbour-iso_mx-iso-time-midday_t30.2.png"]},{"scene":"harbour-iso","q":"time=night","img":["shots/harbour-iso_mx-iso-time-night_t2.png","shots/harbour-iso_mx-iso-time-night_t30.2.png"]},{"scene":"harbour-iso","q":"time=overcast","img":["shots/harbour-iso_mx-iso-time-overcast_t2.png","shots/harbour-iso_mx-iso-time-overcast_t30.2.png"]}]}]},{"key":"weather","title":"Weather","vals":["clear","rain","fog","snow"],"rows":[{"name":"Side view","cells":[{"scene":"harbour-lights","q":"","img":["shots/harbour-lights_mx-side-weather-clear_t2.png","shots/harbour-lights_mx-side-weather-clear_t30.2.png"]},{"scene":"harbour-lights","q":"weather=rain","img":["shots/harbour-lights_mx-side-weather-rain_t2.png","shots/harbour-lights_mx-side-weather-rain_t30.2.png"]},{"scene":"harbour-lights","q":"weather=fog","img":["shots/harbour-lights_mx-side-weather-fog_t2.png","shots/harbour-lights_mx-side-weather-fog_t30.2.png"]},{"scene":"harbour-lights","q":"weather=snow","img":["shots/harbour-lights_mx-side-weather-snow_t2.png","shots/harbour-lights_mx-side-weather-snow_t30.2.png"]}]},{"name":"Depth","cells":[{"scene":"harbour-depth","q":"","img":["shots/harbour-depth_mx-depth-weather-clear_t2.png","shots/harbour-depth_mx-depth-weather-clear_t30.2.png"]},{"scene":"harbour-depth","q":"weather=rain","img":["shots/harbour-depth_mx-depth-weather-rain_t2.png","shots/harbour-depth_mx-depth-weather-rain_t30.2.png"]},{"scene":"harbour-depth","q":"weather=fog","img":["shots/harbour-depth_mx-depth-weather-fog_t2.png","shots/harbour-depth_mx-depth-weather-fog_t30.2.png"]},{"scene":"harbour-depth","q":"weather=snow","img":["shots/harbour-depth_mx-depth-weather-snow_t2.png","shots/harbour-depth_mx-depth-weather-snow_t30.2.png"]}]},{"name":"Top-down","cells":[{"scene":"harbour-topdown","q":"","img":["shots/harbour-topdown_mx-topdown-weather-clear_t2.png","shots/harbour-topdown_mx-topdown-weather-clear_t30.2.png"]},{"scene":"harbour-topdown","q":"weather=rain","img":["shots/harbour-topdown_mx-topdown-weather-rain_t2.png","shots/harbour-topdown_mx-topdown-weather-rain_t30.2.png"]},{"scene":"harbour-topdown","q":"weather=fog","img":["shots/harbour-topdown_mx-topdown-weather-fog_t2.png","shots/harbour-topdown_mx-topdown-weather-fog_t30.2.png"]},{"scene":"harbour-topdown","q":"weather=snow","img":["shots/harbour-topdown_mx-topdown-weather-snow_t2.png","shots/harbour-topdown_mx-topdown-weather-snow_t30.2.png"]}]},{"name":"Isometric","cells":[{"scene":"harbour-iso","q":"","img":["shots/harbour-iso_mx-iso-weather-clear_t2.png","shots/harbour-iso_mx-iso-weather-clear_t30.2.png"]},{"scene":"harbour-iso","q":"weather=rain","img":["shots/harbour-iso_mx-iso-weather-rain_t2.png","shots/harbour-iso_mx-iso-weather-rain_t30.2.png"]},{"scene":"harbour-iso","q":"weather=fog","img":["shots/harbour-iso_mx-iso-weather-fog_t2.png","shots/harbour-iso_mx-iso-weather-fog_t30.2.png"]},{"scene":"harbour-iso","q":"weather=snow","img":["shots/harbour-iso_mx-iso-weather-snow_t2.png","shots/harbour-iso_mx-iso-weather-snow_t30.2.png"]}]}]}],"groups":[{"name":"Time & light","items":[{"label":"midday","q":"time=midday","note":"Top-lit: short shadows under objects, no shafts, lamps off, flat bright characters.","scene":"harbour-lights","img":["shots/harbour-lights_time-midday_t2.png","shots/harbour-lights_time-midday_t30.2.png"],"metric":"0.419 ms/frame \u00b7 off-palette 0 \u00b7 seam 0.72% (normal \u2264 1.11%)"},{"label":"night","q":"time=night","note":"Moonlit from the left; lamps, lantern and windows glow; stars and the lighthouse beam.","scene":"harbour-lights","img":["shots/harbour-lights_time-night_t2.png","shots/harbour-lights_time-night_t30.2.png"],"metric":"0.494 ms/frame \u00b7 off-palette 0 \u00b7 seam 1.11% (normal \u2264 1.48%)"},{"label":"overcast","q":"time=overcast","note":"Soft light: no cast shadows or rims, stratus sky, lamps lit against the grey.","scene":"harbour-lights","img":["shots/harbour-lights_time-overcast_t2.png","shots/harbour-lights_time-overcast_t30.2.png"],"metric":"0.518 ms/frame \u00b7 off-palette 0 \u00b7 seam 0.87% (normal \u2264 1.26%)"}]},{"name":"Weather","items":[{"label":"rain","q":"weather=rain","note":"Streaks, splashes, ripples, a wet quay, and lamp cones in the falling rain.","scene":"harbour-lights","img":["shots/harbour-lights_weather-rain_t2.png","shots/harbour-lights_weather-rain_t30.2.png"],"metric":"0.542 ms/frame \u00b7 off-palette 0 \u00b7 seam 3.26% (normal \u2264 3.72%)"},{"label":"fog","q":"weather=fog","note":"The headland disappears, banks drift across, and the lamps glow in the haze.","scene":"harbour-lights","img":["shots/harbour-lights_weather-fog_t2.png","shots/harbour-lights_weather-fog_t30.2.png"],"metric":"1.186 ms/frame \u00b7 off-palette 0 \u00b7 seam 1.17% (normal \u2264 1.55%)"},{"label":"snow","q":"weather=snow","note":"Falling flakes, snow on every top surface, a colder grade.","scene":"harbour-lights","img":["shots/harbour-lights_weather-snow_t2.png","shots/harbour-lights_weather-snow_t30.2.png"],"metric":"0.767 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.69% (normal \u2264 4.96%)"}]},{"name":"Subjects","items":[{"label":"0 subjects","q":"subjects=0","note":"Ambient only: the camera drifts between points of interest.","scene":"harbour-lights","img":["shots/harbour-lights_subjects-0_t2.png","shots/harbour-lights_subjects-0_t30.2.png"],"metric":"0.670 ms/frame \u00b7 off-palette 0 \u00b7 seam 3.84% (normal \u2264 6.74%)"},{"label":"1 subject","q":"subjects=1","note":"The fisherman alone: the fish goes into the water instead of to the cat.","scene":"harbour-lights","img":["shots/harbour-lights_subjects-1_t2.png","shots/harbour-lights_subjects-1_t30.2.png"],"metric":"0.784 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.23% (normal \u2264 4.56%)"},{"label":"3 subjects","q":"subjects=3","note":"Adds a child who runs past and waves (30-44 s).","scene":"harbour-lights","img":["shots/harbour-lights_subjects-3_t2.png","shots/harbour-lights_subjects-3_t30.2.png"],"metric":"1.194 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.23% (normal \u2264 4.55%)"}]},{"name":"Camera","items":[{"label":"locked","q":"camera=locked","note":"A static frame on the stall; he walks out of shot to the quay end.","scene":"harbour-lights","img":["shots/harbour-lights_camera-locked_t2.png","shots/harbour-lights_camera-locked_t30.2.png"],"metric":"0.773 ms/frame \u00b7 off-palette 0 \u00b7 seam 3.91% (normal \u2264 4.32%)"},{"label":"drift","q":"camera=drift","note":"A slow continuous drift across the harbour and back.","scene":"harbour-lights","img":["shots/harbour-lights_camera-drift_t2.png","shots/harbour-lights_camera-drift_t30.2.png"],"metric":"0.734 ms/frame \u00b7 off-palette 0 \u00b7 seam 3.76% (normal \u2264 6.73%)"},{"label":"cuts","q":"camera=cuts","note":"Four fixed shots joined by quick dithered fades.","scene":"harbour-lights","img":["shots/harbour-lights_camera-cuts_t2.png","shots/harbour-lights_camera-cuts_t30.2.png"],"metric":"0.872 ms/frame \u00b7 off-palette 0 \u00b7 seam 0.00% (normal \u2264 7.38%)"}]},{"name":"Style","items":[{"label":"soft dither","q":"dither=soft","note":"Narrow transitions and a third of the texture speckle: a calmer surface.","scene":"harbour-lights","img":["shots/harbour-lights_style-dither-soft_t2.png","shots/harbour-lights_style-dither-soft_t30.2.png"],"metric":"0.864 ms/frame \u00b7 off-palette 0 \u00b7 seam 3.42% (normal \u2264 3.80%)"},{"label":"strong dither","q":"dither=strong","note":"Wide transitions and full texture: the grittiest look.","scene":"harbour-lights","img":["shots/harbour-lights_style-dither-strong_t2.png","shots/harbour-lights_style-dither-strong_t30.2.png"],"metric":"0.791 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.24% (normal \u2264 4.59%)"},{"label":"16 colours","q":"palette=16","note":"Every colour mapped to its nearest of 16.","scene":"harbour-lights","img":["shots/harbour-lights_style-palette-16_t2.png","shots/harbour-lights_style-palette-16_t30.2.png"],"metric":"0.779 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.10% (normal \u2264 4.41%)"},{"label":"minimal detail","q":"detail=minimal","note":"No barrels, bench or net rack; bare flagstones.","scene":"harbour-lights","img":["shots/harbour-lights_style-detail-minimal_t2.png","shots/harbour-lights_style-detail-minimal_t30.2.png"],"metric":"0.833 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.27% (normal \u2264 4.58%)"},{"label":"rich detail","q":"detail=rich","note":"Extra clutter: rope coil, flower pot, glass floats, a perched gull.","scene":"harbour-lights","img":["shots/harbour-lights_style-detail-rich_t2.png","shots/harbour-lights_style-detail-rich_t30.2.png"],"metric":"0.736 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.22% (normal \u2264 4.55%)"},{"label":"full frame","q":"frame=full","note":"16:9 instead of the 2.39:1 letterbox.","scene":"harbour-lights","img":["shots/harbour-lights_style-frame-full_t2.png","shots/harbour-lights_style-frame-full_t30.2.png"],"metric":"0.899 ms/frame \u00b7 off-palette 0 \u00b7 seam 5.47% (normal \u2264 5.72%)"}]},{"name":"Practical light","items":[{"label":"subtle lamps","q":"practical=subtle","note":"Lamp and lantern light reaches about a fifth of the frame height.","scene":"harbour-lights","img":["shots/harbour-lights_light-practical-subtle_t2.png","shots/harbour-lights_light-practical-subtle_t30.2.png"],"metric":"0.716 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.11% (normal \u2264 4.42%)"},{"label":"strong lamps","q":"practical=strong","note":"Wider, hotter pools and rims.","scene":"harbour-lights","img":["shots/harbour-lights_light-practical-strong_t2.png","shots/harbour-lights_light-practical-strong_t30.2.png"],"metric":"0.801 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.32% (normal \u2264 4.60%)"},{"label":"night + strong","q":"time=night&practical=strong","note":"Two options changed together, for contrast.","scene":"harbour-lights","img":["shots/harbour-lights_light-night-strong_t2.png","shots/harbour-lights_light-night-strong_t30.2.png"],"metric":"0.539 ms/frame \u00b7 off-palette 0 \u00b7 seam 1.27% (normal \u2264 1.58%)"}]},{"name":"Output","items":[{"label":"still","q":"output=still","note":"Freezes at the toss with PNG export buttons (exports work when the scene is opened on its own).","scene":"harbour-lights","img":["shots/harbour-lights_output-still_t2.png","shots/harbour-lights_output-still_t30.2.png"],"metric":"0.726 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.27% (normal \u2264 4.55%)"}]},{"name":"Environment","items":[{"label":"interior","q":"env=interior","note":"Inside the fish shed, looking out: window framing, an oil-lamp pool, daylight on the floor.","scene":"harbour-lights","img":["shots/harbour-lights_env-interior_t2.png","shots/harbour-lights_env-interior_t30.2.png"],"metric":"0.762 ms/frame \u00b7 off-palette 0 \u00b7 seam 1.86% (normal \u2264 1.85%)"}]},{"name":"Effects off","items":[{"label":"no rim light","q":"fx=norim","note":"No rim light and no shading on the characters.","scene":"harbour-lights","img":["shots/harbour-lights_fx-no-rim_t2.png","shots/harbour-lights_fx-no-rim_t30.2.png"],"metric":"0.744 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.23% (normal \u2264 4.55%)"},{"label":"no light shafts","q":"fx=noshafts","note":"No sun shafts and no glinting dust.","scene":"harbour-lights","img":["shots/harbour-lights_fx-no-shafts_t2.png","shots/harbour-lights_fx-no-shafts_t30.2.png"],"metric":"0.592 ms/frame \u00b7 off-palette 0 \u00b7 seam 1.11% (normal \u2264 1.46%)"},{"label":"no shadows","q":"fx=noshadows","note":"No cast shadows.","scene":"harbour-lights","img":["shots/harbour-lights_fx-no-shadows_t2.png","shots/harbour-lights_fx-no-shadows_t30.2.png"],"metric":"0.733 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.24% (normal \u2264 4.56%)"},{"label":"no framing","q":"fx=nofg,novignette,notitle","note":"No foreground bunting, vignette or title card.","scene":"harbour-lights","img":["shots/harbour-lights_fx-no-framing_t2.png","shots/harbour-lights_fx-no-framing_t30.2.png"],"metric":"0.652 ms/frame \u00b7 off-palette 0 \u00b7 seam 4.14% (normal \u2264 4.19%)"}]}],"earlier":[{"scene":"golden-hour-garden","name":"Golden Hour Garden","note":"The original prompt: a woman waters three flower beds on a hillside at dusk. Side view.","img":"shots/golden-hour-garden_scene_t30.2.png"},{"scene":"depth-neon-rain","name":"Neon Rain","note":"A courier and a robot walk down a rainy neon alley toward the camera. Depth projection.","img":"shots/depth-neon-rain_scene_t33.png"},{"scene":"topdown-autumn-pond","name":"Autumn Pond","note":"An old man and his corgi walk a lap of a village pond. Top-down.","img":"shots/topdown-autumn-pond_scene_t61.png"},{"scene":"iso-forge-loop","name":"Forge at Dusk","note":"A blacksmith at work in a floating diorama. Isometric; there is also a still version with PNG export.","img":"shots/iso-forge-loop_scene_t7.05.png"}],"envs":[{"scene":"underwater-kelp-wreck","name":"Kelp Wreck","note":"A diver sweeps a torch through a sunken hull, finds a chest of gold and swims up and away; a turtle crosses as the camera drifts back. Side view.","img":"shots/underwater-kelp-wreck_scene_t33.5.png","metric":"underwater \u00b7 caustics \u00b7 surface shafts \u00b7 bubbles \u00b7 strong sway \u00b7 torch + jellyfish light \u00b7 2 subjects (diver, turtle) \u00b7 0.61 ms/frame"},{"scene":"cave-crystal-depths","name":"Crystal Depths","note":"A mine-cart ride: timbered tunnel, a crystal cavern crossed on a trestle bridge under a shaft of daylight, then a twisting tunnel with sparks and a low beam to duck. Depth projection.","img":"shots/cave-crystal-depths_scene_t15.5.png","metric":"underground \u00b7 depth with a moving camera \u00b7 curves and dips \u00b7 per-pixel lantern, crystal, daylight and headlamp light \u00b7 title card \u00b7 3.4 ms/frame"},{"scene":"space-orbit-repair","name":"Orbit Repair","note":"An astronaut leaves the airlock, welds a joint, takes a new solar cell from a drone and fits it, until a micrometeoroid cracks it again. Isometric.","img":"shots/space-orbit-repair_scene_t18.4.png","metric":"space \u00b7 hard light, near-black shadows \u00b7 rotating planet with city lights \u00b7 beacons \u00b7 weightless sparks \u00b7 pass-object \u00b7 full frame \u00b7 0.42 ms/frame"}],"looks":[{"scene":"depth-neon-rain","name":"Neon Rain","note":"The original: a courier and a robot walk down a rainy alley toward the camera. Depth projection, hand-built.","img":"shots/depth-neon-rain_scene_t33.png","metric":"the reference the kit was extracted from"},{"scene":"neon-last-train","name":"Last Train","note":"The same look in a new place and projection: a commuter waits on a rainy elevated platform until the last train hides her and leaves. Side view, built on the shared kit.","img":"shots/neon-last-train_scene_t26.4.png","metric":"LOOK = neon-noir \u00b7 coloured pools \u00b7 wet streaks + reflections \u00b7 backlit rain \u00b7 headlight haze \u00b7 0.73 ms/frame"}],"hd":[{"scene":"depth-neon-rain-hd","q":"finish=pure","name":"Pixel, 1080p","note":"The original frame at an exact 6x: every pixel crisp, light as dithered pools.","img":"shots/neon-rain-pixel-full.png","metric":"FINISH = pure","smooth":true},{"scene":"depth-neon-rain-hd","q":"","name":"HD finish, 1080p","note":"The same frame as the base layer, with smooth coloured light, glow, a softened far alley, a grade and fine grain.","img":"shots/neon-rain-hd-full.png","metric":"FINISH = hd \u00b7 1.3-2.3 ms/frame at 1080p or 4K","smooth":true},{"scene":"depth-neon-rain-hd","q":"finish=pure","name":"Detail, pixel","note":"A 1:1 crop of the 1080p output around the noodle sign.","img":"shots/neon-rain-pixel-detail.png","metric":"crop at 1:1","smooth":true},{"scene":"depth-neon-rain-hd","q":"","name":"Detail, HD","note":"The same crop: the brick and lettering stay pixel-exact while the light washes over them smoothly.","img":"shots/neon-rain-hd-detail.png","metric":"crop at 1:1","smooth":true}],"made":[{"scene":"underwater-temple","name":"Underwater Temple","img":"shots/underwater-temple_hd_t17.2.png","note":"A temple on a sunlit seabed at dawn. The camera trucks sideways from behind a coral outcrop to reveal it at the end of a paved way, then holds while a turtle glides past; the doorway glows light blue and two purple jellyfish drift by the stone.","metric":"depth \u00b7 reveal truck \u00b7 LOOK neon-noir \u00b7 warm-mono grade \u00b7 HD finish \u00b7 20 s loop \u00b7 1.3 ms/frame","beats":[[1.5,"Opening"],[9,"Reveal"],[16,"Hold"]]}]};
+let moment = 1, playingEl = null;
+const $ = (id) => document.getElementById(id);
+// downloads are blocked inside the embedded player, so drop the scenes' PNG buttons there
+const noExport = () => { try { const x = $('scr').contentDocument.getElementById('export'); if (x) x.remove(); } catch (e) {} };
+$('scr').addEventListener('load', noExport); noExport();
+function play(scene, q, name, el) {
+  const src = 'scenes/' + scene + '.html' + (q ? '?' + q + '#' + q : '');
+  $('scr').src = src; $('nowOpen').href = src; $('nowName').textContent = name;
+  $('nowCode').textContent = q ? q.split('&').join(' \u00b7 ') : scene.indexOf('harbour') === 0 ? 'reference options' : '';
+  if (playingEl) playingEl.classList.remove('playing'); playingEl = el; if (el) el.classList.add('playing');
+  $('player').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+}
+function card(o, ab) {
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'card';
+  const imgs = Array.isArray(o.img) ? o.img : [o.img, o.img];
+  b.innerHTML = '<div class="thumb"><img class="b" alt="" src="' + imgs[moment] + '"' + (o.smooth ? ' style="image-rendering:auto"' : '') + '>' + (ab ? '<img class="a" alt="" src="' + D.ref[moment] + '">' : '') + '</div>' +
+    '<h3></h3>' + (o.q ? '<span class="code"></span>' : '') + '<p class="note"></p>' + (o.metric ? '<p class="meta"></p>' : '');
+  b.querySelector('h3').textContent = o.label || o.name;
+  if (o.q) b.querySelector('.code').textContent = o.q.split('&').join(' \u00b7 ');
+  b.querySelector('.note').textContent = o.note;
+  if (o.metric) b.querySelector('.meta').textContent = o.metric;
+  b.dataset.imgs = JSON.stringify(imgs);
+  b.addEventListener('click', () => play(o.scene, o.q, (o.label ? 'Harbour Lights \u00b7 ' + o.label : o.name), b));
+  return b;
+}
+D.projections.forEach(o => $('proj').appendChild(card({ ...o, name: 'Harbour Lights \u00b7 ' + o.name })));
+D.matrices.forEach(m => {
+  const wrap = document.createElement('div'); wrap.innerHTML = '<h3></h3><div class="mxwrap"><div class="mx"></div></div>';
+  wrap.querySelector('h3').textContent = m.title; wrap.querySelector('h3').className = '';
+  const g = wrap.querySelector('.mx'); g.appendChild(document.createElement('span'));
+  m.vals.forEach(v => { const h = document.createElement('span'); h.className = 'h'; h.textContent = v; g.appendChild(h); });
+  m.rows.forEach(r => {
+    const rn = document.createElement('span'); rn.className = 'r'; rn.textContent = r.name; g.appendChild(rn);
+    r.cells.forEach((c, i) => {
+      const b = document.createElement('button'); b.type = 'button'; b.setAttribute('aria-label', r.name + ', ' + m.vals[i]);
+      b.innerHTML = '<img class="b" alt="" src="' + c.img[moment] + '">'; b.dataset.imgs = JSON.stringify(c.img);
+      b.addEventListener('click', () => play(c.scene, c.q, 'Harbour Lights \u00b7 ' + r.name + ' \u00b7 ' + m.vals[i], b));
+      g.appendChild(b);
+    });
+  });
+  $('mats').appendChild(wrap);
+});
+D.groups.forEach(gr => {
+  const box = document.createElement('div'); box.style.display = 'grid'; box.style.gap = '10px';
+  const h = document.createElement('h3'); h.textContent = gr.name; box.appendChild(h);
+  const g = document.createElement('div'); g.className = 'grid'; gr.items.forEach(o => g.appendChild(card(o, true))); box.appendChild(g);
+  $('groups').appendChild(box);
+});
+D.made.forEach(o => {
+  const f = document.createElement('div'); f.className = 'feature';
+  f.innerHTML = '<button type="button" class="still"><div class="thumb"><img alt="" src="' + o.img + '"></div></button>' +
+    '<div class="fcopy"><h3></h3><p class="note"></p><p class="meta"></p><div class="beats" role="group" aria-label="Play from a beat"></div></div>';
+  f.querySelector('h3').textContent = o.name; f.querySelector('.note').textContent = o.note; f.querySelector('.meta').textContent = o.metric;
+  const still = f.querySelector('.still'); still.setAttribute('aria-label', 'Play ' + o.name);
+  still.addEventListener('click', () => play(o.scene, '', o.name, still));
+  o.beats.forEach(([t, label]) => {
+    const b = document.createElement('button'); b.type = 'button'; b.innerHTML = '<b></b><span></span>';
+    b.querySelector('b').textContent = label; b.querySelector('span').textContent = t + ' s';
+    b.addEventListener('click', () => play(o.scene, 't=' + t, o.name + ' \u00b7 ' + label, b));
+    f.querySelector('.beats').appendChild(b);
+  });
+  $('made').appendChild(f);
+});
+D.hd.forEach(o => $('hd').appendChild(card(o)));
+D.looks.forEach(o => $('looks').appendChild(card(o)));
+D.envs.forEach(o => $('envs').appendChild(card(o)));
+D.earlier.forEach(o => $('earlier').appendChild(card(o)));
+document.querySelectorAll('.toggle button').forEach(t => t.addEventListener('click', () => {
+  moment = +t.dataset.m;
+  document.querySelectorAll('.toggle button').forEach(x => x.setAttribute('aria-pressed', x === t));
+  document.querySelectorAll('[data-imgs]').forEach(el => { const im = JSON.parse(el.dataset.imgs), b = el.querySelector('img.b'); if (b) b.src = im[moment]; const a = el.querySelector('img.a'); if (a) a.src = D.ref[moment]; });
+}));
+</script>
+
+</body></html>
