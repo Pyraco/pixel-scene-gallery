@@ -57,10 +57,15 @@ select, input[type=number] { width: 100%; background: var(--chip); color: var(--
 #toast.on { opacity: 1; }
 body.clean #panel, body.clean #bar { display: none; }
 body.clean #stage { background: #000; }
-@media (max-width: 760px) {
-  body { flex-direction: column-reverse; overflow: auto; }
-  #panel { width: 100%; height: auto; border-right: 0; border-top: 1px solid var(--line); }
-  #main { height: 62vh; flex: none; }
+@media (max-width: 760px) {                                  /* phones: the picture stays pinned at the top while the settings scroll under it */
+  html, body { height: auto; }
+  body { display: flex; flex-direction: column; overflow: visible; }
+  #main { order: -1; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; height: auto; flex: none; display: block; background: var(--bg); border-bottom: 1px solid var(--line); }
+  #bar { flex-wrap: nowrap; overflow-x: auto; padding: 8px 12px; -webkit-overflow-scrolling: touch; }
+  #bar .title { display: none; }
+  #bar .btn { flex: none; }
+  #stage { aspect-ratio: 16 / 9; width: 100%; height: auto; }
+  #panel { width: 100%; height: auto; overflow: visible; border-right: 0; }
 }
 /* v2 panel: numbered sections, plain-English hints, low / high labels, scene types, the describe box */
 .sec h2 { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); }
@@ -79,8 +84,17 @@ textarea { width: 100%; resize: vertical; background: var(--chip); color: var(--
 .types button span { position: absolute; left: 0; right: 0; bottom: 0; font-size: 11.5px; font-weight: 600; padding: 12px 6px 4px; background: linear-gradient(transparent, rgba(0,0,0,.75)); text-align: left; }
 .types button.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 /* embedded players (clean): the scene fills the frame at every width */
-body.clean { flex-direction: row; overflow: hidden; }
-body.clean #main { height: 100%; flex: 1; }
+body.clean { display: flex; flex-direction: row; overflow: hidden; height: 100vh; }
+body.clean #main { position: static; height: 100vh; flex: 1; border: 0; }
+body.clean #stage { aspect-ratio: auto; height: 100%; }
+
+/* the HD finish: a smooth copy of the frame over the crisp one, and a soft glow over both */
+#screen { position: relative; box-shadow: 0 10px 40px rgba(0,0,0,.5); background: #000; }
+#screen canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#view { box-shadow: none; }
+#viewSmooth { image-rendering: auto; }
+#viewGlow { image-rendering: auto; filter: blur(6px) saturate(1.2); mix-blend-mode: screen; pointer-events: none; }
+#screen canvas[hidden] { display: none; }
 
 </style>
 </head>
@@ -104,7 +118,7 @@ body.clean #main { height: 100%; flex: 1; }
     <button class="btn" id="link" title="Copy a link to this exact scene">Copy link</button>
   </div>
   <div id="stage">
-    <canvas id="view" width="480" height="270" aria-label="Rendered landscape"></canvas>
+    <div id="screen"><canvas id="view" width="480" height="270" aria-label="Rendered scene"></canvas><canvas id="viewSmooth" width="480" height="270" aria-hidden="true" hidden></canvas><canvas id="viewGlow" width="480" height="270" aria-hidden="true" hidden></canvas></div>
     <div id="busy">Painting the scene&hellip;</div>
     <div id="toast" role="status"></div>
   </div>
@@ -498,6 +512,7 @@ function ridgeY(ctx, L, x) {
   const { W, H, U } = ctx, u = x * L.freq + L.off;
   let y;
   if (L.kind === 'mount') y = L.base - L.amp * Math.pow(ridged1(u, L.seed, 5), 1.25) * 1.25;
+  else if (L.kind === 'peak') { const d = Math.abs(x - L.px) / L.pw; y = L.base - L.amp * Math.pow(Math.max(0, 1 - d), 1.5) - L.amp * 0.1 * (ridged1(u, L.seed, 4) - 0.5) * Math.min(1, d * 4); }
   else if (L.kind === 'dune') y = L.base - L.amp * (Math.pow(1 - Math.abs(Math.sin(u * Math.PI + 1.5 * noise1(u * 0.7, L.seed))), 1.7) * (0.55 + 0.45 * noise1(u * 0.5 + 7, L.seed)));
   else y = L.base - L.amp * clamp01((fbm1(u, L.seed, 4) - 0.28) / 0.44);
   y += L.amp * (L.dip || 0) * Math.exp(-Math.pow((x / W - ctx.xv) / 0.16, 2));          // the valley opens in the middle
@@ -510,10 +525,10 @@ function ridgeY(ctx, L, x) {
 }
 function paintRange(ctx, L) {
   const { W, H, U, rig } = ctx, S = ctx.backLand, side = rig.side;
-  const ramp = makeRamp(rig, L.albedo, L.kind === 'mount' ? 7 : 6, { sat: rig.sat * 0.9 }), snowR = makeRamp(rig, MAT.snow, 6, { lo: 0.3, sat: 0.08 });
+  const ramp = makeRamp(rig, L.albedo, L.kind === 'mount' || L.kind === 'peak' ? 7 : 6, { sat: rig.sat * 0.9 }), snowR = makeRamp(rig, MAT.snow, 6, { lo: 0.3, sat: 0.08 });
   const R = new Float32Array(W + 2);
   for (let x = -1; x <= W; x++) R[x + 1] = ridgeY(ctx, L, x);
-  const bottom = L.bottom || Math.min(H, Math.ceil(ctx.groundMaxY + 2)), sc = L.kind === 'mount' ? 1 : 0.7;
+  const bottom = L.bottom || Math.min(H, Math.ceil(ctx.groundMaxY + 2)), sc = L.kind === 'mount' || L.kind === 'peak' ? 1 : 0.7;
   const hazeC = mixOk(rig.midC, rig.hazeC, 0.6);                                // distance turns the land toward the blue of the sky
   for (let x = 0; x < W; x++) {
     const top = R[x + 1], slope = (R[x + 2] - R[x]) * 0.5, sil = 0.5 + clamp(side * slope * (L.kind === 'dune' ? 2.2 : 0.9), -0.48, 0.48);
@@ -526,7 +541,7 @@ function paintRange(ctx, L) {
       const fx = (fbm((x + 1) * 0.02 / U * sc, y * 0.05 / U * sc, L.seed + 9, 3) - fbm((x - 1) * 0.02 / U * sc, y * 0.05 / U * sc, L.seed + 9, 3)) * 9;
       let v = lerp(0.5 + clamp(side * fx, -0.45, 0.45), silv, wSil) * 0.75 + 0.18;
       let spur = 1;
-      if (L.kind === 'mount') {                                                               // eroded faces: spurs and gullies running down from the crest
+      if (L.kind === 'mount' || L.kind === 'peak') {                                         // eroded faces: spurs and gullies running down from the crest
         const N = (xx) => { const u = xx * 0.03 / U + d * 0.006 / U * -side, w = y * 0.022 / U; return 1 - Math.abs(fbm(u, w, L.seed + 4, 3) * 2 - 1); };
         const n0 = N(x), g = (N(x + 1) - N(x - 1)) * 14;
         spur = n0;
@@ -1034,12 +1049,29 @@ function makeCtx(set) {
   ctx.skyBottom = H * 0.6; ctx.hy = H * 0.555; ctx.xv = 0.5;
   return ctx;
 }
+// ---- pixel <-> HD: the grid gets finer toward HD; the last stretch adds a soft painted finish on display ----
+const RES_STEPS = [320, 384, 480, 640, 960];
+function hdRes(hd) { return hd < 0.15 ? 320 : hd < 0.35 ? 384 : hd < 0.6 ? 480 : hd < 0.8 ? 640 : 960; }
+function hdFinish(hd) { return smooth(0.72, 1, hd); }
+// ---- the camera: close-ups and angled shots are painted larger, then framed ----
+const CAMERAS = { wide: { z: 1 }, close: { z: 1.75 }, low: { z: 1.32, ay: 0.04 }, high: { z: 1.32, ay: 1 }, drift: { z: 1.4, ay: 0.55, drift: true } };
 function buildScene(set) {
   set = Object.assign({}, DEFAULTS, set);
+  const cam = CAMERAS[set.camera] || CAMERAS.wide;
+  let OW = set.fixedRes || hdRes(set.hd);
+  while (OW * cam.z > 1440 && OW > 320) OW = RES_STEPS[RES_STEPS.indexOf(OW) - 1];
+  const OH = Math.round(OW * 9 / 16), IW = cam.z > 1 ? Math.round(OW * cam.z / 16) * 16 : OW, IH = Math.round(IW * 9 / 16);
+  set = Object.assign({}, set, { res: IW });
   const ctx = makeCtx(set), type = SCENE_TYPES[set.scene] ? set.scene : 'landscape';
   const out = SCENE_TYPES[type].build(ctx) || {};
   const sc = Object.assign({ W: ctx.W, H: ctx.H, U: ctx.U, set, rig: ctx.rig, backSky: ctx.backSky, backLand: ctx.backLand, clouds: [], sprites: [], stars: ctx.stars || [], water: ctx.water || [], particles: [], fx: ctx.fx }, out);
   if (!SCENE_TYPES[type].noWeather) { sc.particles = sc.particles.concat(weatherParticles(ctx)); weatherFx(ctx, sc); }
+  sc.outW = OW; sc.outH = OH; sc.finish = hdFinish(set.hd);
+  if (IW !== OW) {
+    const fo = ctx.focus || [0.5, 0.55], ox = Math.round(clamp(fo[0] * IW - OW / 2, 0, IW - OW));
+    const oy = set.camera === 'close' ? Math.round(clamp(fo[1] * IH - OH / 2, 0, IH - OH)) : cam.drift ? Math.round(clamp(fo[1] * IH - OH * 0.4, 0, IH - OH)) : Math.round((IH - OH) * cam.ay);
+    sc.cam = { ox, oy, drift: !!cam.drift };
+  }
   return sc;
 }
 function weatherParticles(ctx) {
@@ -1246,6 +1278,14 @@ function particleConfig(ctx) {
 // ---------- compose one frame at time t (seconds): layers, drifting clouds, swaying plants, water glints, effects, life ----------
 // Everything is a pure function of t, so any moment can be rendered (and exported) exactly.
 function compose(sc, t, F) {
+  if (!sc.cam) { composeFull(sc, t, F); grade(sc, F); return; }
+  if (!sc.cbuf) sc.cbuf = new Uint8ClampedArray(sc.W * sc.H * 4);
+  composeFull(sc, t, sc.cbuf);
+  const OW = sc.outW, OH = sc.outH, ox = sc.cam.drift ? Math.round((sc.W - OW) * (0.5 + 0.5 * Math.sin(t * 0.07))) : sc.cam.ox, oy = sc.cam.oy;
+  for (let y = 0; y < OH; y++) F.set(sc.cbuf.subarray(((y + oy) * sc.W + ox) * 4, ((y + oy) * sc.W + ox + OW) * 4), y * OW * 4);
+  grade(sc, F);
+}
+function composeFull(sc, t, F) {
   const { W, H, U } = sc;
   F.set(sc.backSky.px);
   for (const s of sc.stars) {                                      // stars twinkle
@@ -1282,7 +1322,6 @@ function compose(sc, t, F) {
   for (const fx of sc.fx) if (fx.layer === 'front') drawFx(sc, fx, t, F);
   for (const p of sc.particles) drawParticles(sc, p, t, F);
   for (const fx of sc.fx) if (fx.layer === 'top') drawFx(sc, fx, t, F);
-  grade(sc, F);
 }
 function fput(F, W, H, x, y, c, a) {
   x = Math.round(x); y = Math.round(y); if (x < 0 || y < 0 || x >= W || y >= H) return;
@@ -1390,6 +1429,36 @@ function drawFx(sc, fx, t, F) {
         }
       }
     }
+  } else if (fx.kind === 'crowd') {                                // spectators leaping up and waving
+    const fr = Math.floor(t * 3);
+    for (let i = 0; i < fx.heads.length; i++) {
+      if (hash2(i, fr, 11) < 0.82) continue;
+      const idx = fx.heads[i], x = idx % W, y = (idx / W) | 0, c = fx.skin[i % fx.skin.length];
+      fput(F, W, H, x + (i % 2 ? 1 : -1), y - 1, c); if (U > 1.2) fput(F, W, H, x + (i % 2 ? 1 : -1), y - 2, c);
+    }
+  } else if (fx.kind === 'mg') {                                     // machine-gun fire: bursts of muzzle flash
+    const burst = Math.floor(t / 2.4), on = (t % 2.4) < 1.5 && hash1(burst, 7) > 0.15;
+    if (on && hash2(Math.floor(t * 14), 3, 5) > 0.35) {
+      fglow(F, W, H, fx.x, fx.y, 9 * U, [1, 0.8, 0.4], 0.8);
+      for (let k = -3; k <= 3; k++) { fput(F, W, H, fx.x + k * fx.dir, fx.y, [1, 0.95, 0.7]); fput(F, W, H, fx.x, fx.y + k * 0.5, [1, 0.9, 0.6], 0.7); }
+    }
+  } else if (fx.kind === 'blasts') {                                // shells landing: a flash, a fountain of sand, a puff of smoke
+    for (const b of fx.list) {
+      const ph = ((t + b.ph) % b.period) / b.period; if (ph > 0.18) continue;
+      const k = ph / 0.18;
+      if (k < 0.25) fglow(F, W, H, b.x, b.y - b.s, b.s * 4, [1, 0.75, 0.4], 0.9 * (1 - k * 4));
+      for (let i = 0; i < 40; i++) {
+        const a = -Math.PI / 2 + (hash1(i, b.ph * 10 | 0) - 0.5) * 1.6, v = b.s * (2 + 4 * hash1(i + 50, 3)), x = b.x + Math.cos(a) * v * k * 3, y = b.y + Math.sin(a) * v * k * 3 + k * k * b.s * 8;
+        fput(F, W, H, x, y, i % 3 ? [0.42, 0.36, 0.28] : [0.25, 0.22, 0.2], 1 - k);
+      }
+    }
+  } else if (fx.kind === 'sunrays') {                             // rays fanning out from a low sun behind the peaks
+    const y1 = Math.floor(H * 0.62);
+    for (let y = 0; y < y1; y++) for (let x = 0; x < W; x++) {
+      const dx = x - fx.x, dy = y - fx.y, d = Math.hypot(dx, dy); if (d < 3 * U) continue;
+      const a = Math.atan2(dy, dx), b = vnoise(a * 9 + t * 0.04, 0.5, fx.seed) * 0.7 + vnoise(a * 23 - t * 0.07, 2.5, fx.seed + 1) * 0.3;
+      const k = smooth(0.5, 0.78, b) * fx.k * Math.exp(-d / (H * 0.7)); if (k > 0.01) fadd(F, W, H, x, y, fx.c, k);
+    }
   } else if (fx.kind === 'glows') {                                // lamps, neon and windows, breathing and flickering
     for (const g of fx.list) {
       let k = g.k; if (g.flicker) { const f = hash1(Math.floor(t * 12 + g.ph * 10), g.ph * 100 | 0); if (f > 1 - g.flicker) k *= 0.25; }
@@ -1462,6 +1531,20 @@ function drawParticles(sc, P, t, F) {
       const x = lerp(sx, ex, ph) + (h2 - 0.5) * 30 * U, y = P.y * H - Math.sin(ph * Math.PI) * H * 0.3 + (h3 - 0.5) * 10 * U;
       const vx = (ex - sx), vy = -Math.cos(ph * Math.PI) * H * 0.3 * Math.PI, n = Math.hypot(vx, vy), ux = vx / n, uy = vy / n;
       for (let k = 0; k < 4 * U; k++) fput(F, W, H, x - ux * k, y - uy * k, k < 1 ? [0.85, 0.85, 0.9] : [0.25, 0.18, 0.12]);
+    } else if (P.kind === 'dust') {                                  // sand kicked up round the fighters' feet
+      const life = ((t * (0.5 + 0.4 * h3)) + h2) % 1, x = P.x[i % P.x.length] + (h1 - 0.5) * 30 * U + life * 6 * U * (h3 - 0.5), y = P.y * H - life * 10 * U - h3 * 3 * U;
+      const c = [0.86, 0.76, 0.56]; fput(F, W, H, x, y, c, (1 - life) * 0.55); if (U > 1.2 || h3 > 0.5) fput(F, W, H, x + 1, y, c, (1 - life) * 0.4);
+    } else if (P.kind === 'tracers') {                               // tracer rounds streaking from the bunker down the beach
+      const ph = (t * 1.6 + h1) % 1; if ((t % 2.4) > 1.5) continue;
+      const tx = P.tx0 * W + h2 * (P.tx1 - P.tx0) * W, ty = (P.ty0 + h3 * (P.ty1 - P.ty0)) * H, x = lerp(P.x, tx, ph), y = lerp(P.y, ty, ph), dx = (tx - P.x), dy = (ty - P.y), n = Math.hypot(dx, dy);
+      for (let k = 0; k < 7 * U; k++) fput(F, W, H, x - dx / n * k, y - dy / n * k, k < 2 ? [1, 0.95, 0.7] : [1, 0.55, 0.2], 1 - k / (7 * U));
+    } else if (P.kind === 'impacts') {                               // rounds kicking up sand where they land
+      const ph = (t * 1.3 + h1 * 3) % 1; if (ph > 0.25 || (t % 2.4) > 1.7) continue;
+      const x = (P.x0 + h2 * (P.x1 - P.x0)) * W, y = (P.y0 + h3 * (P.y1 - P.y0)) * H, k = ph / 0.25;
+      for (let j = 0; j < 5; j++) fput(F, W, H, x + (j - 2) * 0.7, y - k * (2 + j % 3) * 3 * U, [0.6, 0.54, 0.42], 1 - k);
+    } else if (P.kind === 'motes') {                                 // drifting motes of light
+      const x = ((h1 * W + Math.sin(t * 0.25 + i) * 20 * U + t * 2 * U) % W + W) % W, y = H * (0.3 + 0.65 * h2) + Math.cos(t * 0.3 + i * 1.7) * 8 * U, b = 0.5 + 0.5 * Math.sin(t * (0.8 + h3) + i);
+      const c = i % 3 ? [1, 0.82, 0.55] : [1, 0.65, 0.8]; fput(F, W, H, x, y, c, b); for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) fput(F, W, H, x + dx, y + dy, c, b * 0.3);
     } else if (P.kind === 'meteors') {
       const period = 7 + 5 * h1, ph = (t / period + h2) % 1; if (ph > 0.08) continue;
       const k = ph / 0.08, x = h3 * W + k * 60 * U, y = h1 * H * 0.35 + k * 25 * U;
@@ -1484,6 +1567,7 @@ function grade(sc, F) {
     else if (g === 'warm') { r = r * 1.06 + 8; gg = gg * 1.01 + 3; b = b * 0.88; r = l + (r - l) * 0.9; }
     else if (g === 'cool') { r = r * 0.9; gg = gg * 0.99; b = b * 1.08 + 8; }
     else if (g === 'sepia') { r = l * 1.07 + 18; gg = l * 0.9 + 8; b = l * 0.7; }
+    else if (g === 'drab') { const k = 0.38; r = (l + (r - l) * k) * 0.98 + 4; gg = (l + (gg - l) * k) * 1.0 + 5; b = (l + (b - l) * k) * 0.9; r = (r - 128) * 1.1 + 124; gg = (gg - 128) * 1.1 + 124; b = (b - 128) * 1.1 + 120; }
     F[o] = r; F[o + 1] = gg; F[o + 2] = b;
   }
 }
@@ -1568,13 +1652,14 @@ function makePerson(ctx, x, by, h, sp, seed) {
   const skinR = R(sp.skin || SKIN[1], 5), hairR = R(sp.hair || HAIR[0], 5), topR = R(sp.top || CLOTH[0]), botR = R(sp.bottom || '#4a3a2e', 5), bootR = R(sp.boots || '#3a2a20', 4);
   const metalR = R('#9aa4b4', 7, { sat: 0.05 }), woodR = R('#7a5234', 5), darkR = R('#2a2a30', 5);
   const team = sp.team ? TEAM[sp.team] : null, teamR = team ? R(team.main, 6) : topR, trimR = team ? R(team.trim, 5) : R('#e8d890', 5);
-  const sit = sp.pose === 'sit', walk = sp.pose === 'walk1' ? 1 : sp.pose === 'walk2' ? -1 : 0;
-  const drop = sit ? h * 0.26 : 0;
+  const sit = sp.pose === 'sit', crouch = sp.pose === 'crouch' || sp.pose === 'aimlow', aim = sp.pose === 'aim' || sp.pose === 'aimlow', walk = sp.pose === 'walk1' ? 1 : sp.pose === 'walk2' ? -1 : 0;
+  const drop = sit ? h * 0.26 : crouch ? h * 0.2 : 0;
   const headY = by - h * 0.9 + drop, hr = Math.max(1.6, h * 0.085), shY = by - h * 0.76 + drop, hipY = by - h * 0.49 + drop;
   const sw = h * 0.115, hw_ = h * 0.095;
   // hands
   const hand = (side) => {
     const front = side === f;
+    if (aim) return front ? [x + f * h * 0.3, by - h * 0.66 + drop] : [x + f * h * 0.1, by - h * 0.61 + drop];
     if (front && sp.pose === 'raise') return [x + f * h * 0.06, by - h * 1.1 + drop];
     if (front && sp.pose === 'strike') return [x + f * h * 0.3, by - h * 0.86 + drop];
     if (front && (sp.item === 'lantern' || sp.item === 'torch' || sp.item === 'umbrella' || sp.item === 'staff' || sp.item === 'basket' || sp.pose === 'hold')) return [x + f * h * 0.17, by - h * 0.58 + drop];
@@ -1582,7 +1667,8 @@ function makePerson(ctx, x, by, h, sp, seed) {
     return [x + side * h * 0.125 + (walk ? side * f * walk * h * 0.07 : 0), by - h * 0.46 + drop];
   };
   const back = -f, bs = [x + back * h * 0.1, shY + h * 0.02], fs = [x + f * h * 0.1, shY + h * 0.02];
-  const armR = sp.armor ? metalR : (sp.dress && !sp.armor ? R(sp.dress) : topR);
+  const armR = sp.bare ? skinR : sp.armor ? metalR : (sp.dress && !sp.armor ? R(sp.dress) : topR);
+  if (sp.pack) pPoly(S, ctx, [[x - f * sw * 0.3, shY + h * 0.02], [x - f * sw * 1.35, shY + h * 0.04], [x - f * sw * 1.3, hipY - h * 0.02], [x - f * sw * 0.3, hipY]], R(sp.packC || '#5a5438', 5), { dv: -0.1 });
   // back arm
   const bh = hand(back);
   pShadeCap(S, ctx, bs[0], bs[1], bh[0], bh[1], h * 0.036, h * 0.03, armR, { dv: -0.12 });
@@ -1590,21 +1676,23 @@ function makePerson(ctx, x, by, h, sp, seed) {
   // cape (behind)
   if (sp.cape) pPoly(S, ctx, [[x - sw * 0.9, shY], [x + sw * 0.9, shY], [x + sw * 1.3 - f * h * 0.08, by - h * 0.12], [x - sw * 1.3 - f * h * 0.08, by - h * 0.12]], R(sp.cape), { dv: -0.15 });
   // legs
-  const legs = sit
+  const legs = crouch
+    ? [[[x - h * 0.04, hipY], [x + f * h * 0.16, hipY + h * 0.1], [x + f * h * 0.1, by]], [[x + h * 0.04, hipY], [x - f * h * 0.06, hipY + h * 0.2], [x - f * h * 0.24, by]]]
+    : sit
     ? [[[x - h * 0.04, hipY], [x + f * h * 0.22, hipY + h * 0.02], [x + f * h * 0.24, by]], [[x + h * 0.04, hipY], [x + f * h * 0.26, hipY + h * 0.03], [x + f * h * 0.28, by]]]
     : [[[x - h * 0.045, hipY], [x - h * 0.05 + f * walk * h * 0.09, by - h * 0.25], [x - h * 0.05 + f * walk * h * 0.12, by - 1]], [[x + h * 0.045, hipY], [x + h * 0.05 - f * walk * h * 0.09, by - h * 0.25], [x + h * 0.05 - f * walk * h * 0.12, by - 1]]];
   legs.forEach((lg, i) => {
-    const dv = (i === 0) === (f > 0) ? -0.12 : 0, lr = sp.armor ? metalR : botR;
+    const dv = (i === 0) === (f > 0) ? -0.12 : 0, lr = sp.bare ? skinR : sp.armor ? metalR : botR;
     pShadeCap(S, ctx, lg[0][0], lg[0][1], lg[1][0], lg[1][1], h * 0.045, h * 0.04, lr, { dv });
-    pShadeCap(S, ctx, lg[1][0], lg[1][1], lg[2][0], lg[2][1], h * 0.04, h * 0.038, bootR, { dv });
+    pShadeCap(S, ctx, lg[1][0], lg[1][1], lg[2][0], lg[2][1], h * 0.04, h * 0.038, sp.greaves ? metalR : sp.bare ? skinR : bootR, { dv });
     pShadeEll(S, ctx, lg[2][0] + f * h * 0.02, lg[2][1] - h * 0.015, h * 0.05, h * 0.028, bootR, { dv });
   });
   // skirt / coat / dress below the waist
-  const hemY = sp.dress ? by - h * 0.06 : sp.coat ? by - h * 0.2 : sp.robe ? by - h * 0.03 : sp.armor ? by - h * 0.34 : by - h * 0.38;
+  const hemY = sp.bare ? by - h * 0.47 : sp.dress ? by - h * 0.06 : sp.coat ? by - h * 0.2 : sp.robe ? by - h * 0.03 : sp.armor ? by - h * 0.34 : by - h * 0.38;
   const skirtR = sp.dress ? R(sp.dress) : sp.armor ? (team ? teamR : topR) : sp.coat ? R(sp.coat) : topR;
   pPoly(S, ctx, [[x - hw_, hipY - h * 0.02], [x + hw_, hipY - h * 0.02], [x + hw_ * (sp.dress ? 1.9 : 1.35), hemY + drop * 0.2], [x - hw_ * (sp.dress ? 1.9 : 1.35), hemY + drop * 0.2]], skirtR, { grad: 0.15, stripe: sp.armor ? Math.max(1, Math.round(h * 0.04)) : 0 });
   // torso
-  const torsoR = sp.armor ? metalR : sp.coat ? R(sp.coat) : sp.dress ? R(sp.dress) : topR;
+  const torsoR = sp.bare ? skinR : sp.armor ? metalR : sp.coat ? R(sp.coat) : sp.dress ? R(sp.dress) : topR;
   pPoly(S, ctx, [[x - sw, shY], [x + sw, shY], [x + hw_, hipY], [x - hw_, hipY]], torsoR);
   if (sp.armor && team) pPoly(S, ctx, [[x - sw * 0.45, shY + h * 0.04], [x + sw * 0.45, shY + h * 0.04], [x + hw_ * 0.5, hipY + h * 0.08], [x - hw_ * 0.5, hipY + h * 0.08]], teamR);   // tabard
   if (sp.apron) pPoly(S, ctx, [[x - hw_ * 0.7, hipY - h * 0.06], [x + hw_ * 0.7, hipY - h * 0.06], [x + hw_ * 0.9, hemY], [x - hw_ * 0.9, hemY]], R('#e8e2d4', 5));
@@ -1613,9 +1701,20 @@ function makePerson(ctx, x, by, h, sp, seed) {
   // head
   if (sp.hairStyle === 'long' && sp.hat !== 'helmet') pPoly(S, ctx, [[x - hr * 1.05, headY], [x + hr * 1.05, headY], [x + hr * 1.1 - f * hr * 0.6, shY + h * 0.1], [x - hr * 1.1 - f * hr * 0.6, shY + h * 0.1]], hairR, { dv: -0.1 });
   pShadeEll(S, ctx, x, headY, hr, hr * 1.08, skinR);
-  if (h >= 18 && sp.hat !== 'helmet') put(S, x + f * hr * 0.45, headY - hr * 0.05, shade(darkR, 0.1));   // eye
+  if (h >= 18 && sp.hat !== 'helmet' && sp.hat !== 'galea') put(S, x + f * hr * 0.45, headY - hr * 0.05, shade(darkR, 0.1));   // eye
   const hat = sp.hat || 'none';
-  if (hat === 'helmet') {
+  if (hat === 'galea') {                                            // a gladiator's bronze helmet: brim, grille, crest
+    const bz = R('#c89a4a', 7, { sat: 0.2 });
+    const crR = R(sp.crestC || '#c83a32', 6);
+    for (let i = 0; i <= 9; i++) { const a = Math.PI * (0.92 - 0.84 * i / 9) * (f > 0 ? 1 : -1) + (f > 0 ? 0 : Math.PI); pShadeEll(S, ctx, x + Math.cos(a) * hr * 0.95, headY - hr * 0.15 - Math.abs(Math.sin(a)) * hr * 1.25, hr * 0.32, hr * 0.36, crR, { dv: i % 2 ? -0.08 : 0.04 }); }   // the crest, arched front to back
+    pShadeEll(S, ctx, x, headY - hr * 0.05, hr * 1.12, hr * 1.08, bz);
+    pShadeEll(S, ctx, x, headY + hr * 0.32, hr * 1.5, hr * 0.22, bz, { dv: -0.12 });
+    for (let k = -1; k <= 1; k++) pLine(S, x + f * hr * 0.35, headY + k * hr * 0.24, x + f * hr * 1.02, headY + k * hr * 0.24, shade(darkR, 0.1), 1);
+  } else if (hat === 'm1') {                                        // a steel field helmet
+    const hc = R(sp.hatC || '#4c5034', 6, { sat: 0.1 });
+    pShadeEll(S, ctx, x, headY - hr * 0.2, hr * 1.25, hr * 0.98, hc, { clipBelow: headY + hr * 0.15 });
+    pShadeEll(S, ctx, x, headY + hr * 0.12, hr * 1.45, Math.max(0.8, hr * 0.2), hc, { dv: -0.1 });
+  } else if (hat === 'helmet') {
     pShadeEll(S, ctx, x, headY - hr * 0.15, hr * 1.12, hr * 1.05, metalR, { clipBelow: headY + hr * 0.35 });
     pLine(S, x + f * hr * 0.2, headY - hr * 0.1, x + f * hr * 1.1, headY - hr * 0.1, shade(darkR, 0.05), 1);    // visor slit
     if (sp.plume) pShadeCap(S, ctx, x, headY - hr * 1.1, x - f * hr * 1.4, headY - hr * 1.9, hr * 0.35, hr * 0.2, team ? teamR : R('#c83a32'));
@@ -1631,17 +1730,25 @@ function makePerson(ctx, x, by, h, sp, seed) {
     if (hat === 'crown') pPoly(S, ctx, [[x - hr * 0.9, headY - hr * 0.7], [x + hr * 0.9, headY - hr * 0.7], [x + hr * 0.9, headY - hr * 1.5], [x + hr * 0.45, headY - hr * 1.1], [x, headY - hr * 1.6], [x - hr * 0.45, headY - hr * 1.1], [x - hr * 0.9, headY - hr * 1.5]], R('#e8c040', 5));
   }
   // shield on the facing side
-  if (sp.shield) {
+  if (sp.shield && sp.shieldShape === 'rect') {                     // a tall curved legionary shield
+    const scx = x + f * h * 0.15, scy = by - h * 0.55 + drop, sw2 = h * 0.12, sh2 = h * 0.24, sR = R(sp.shieldC || '#b0302a', 6), rim = R('#c8a040', 5);
+    for (let y = Math.floor(scy - sh2); y <= scy + sh2; y++) for (let xx = Math.floor(scx - sw2); xx <= scx + sw2; xx++) { const u = (xx + 0.5 - scx) / sw2, v = (y + 0.5 - scy) / sh2; if (u * u * 0.3 + v * v * v * v > 1) continue; const edge = Math.abs(u) > 0.84 || Math.abs(v) > 0.93; put(S, xx, y, shade(edge ? rim : sR, 0.55 - u * f * 0.2 + (Math.abs(u) < 0.12 || Math.abs(v) < 0.08 ? 0.25 : 0))); }
+    pShadeEll(S, ctx, scx, scy, h * 0.035 + 0.5, h * 0.035 + 0.5, rim);
+  } else if (sp.shield) {
     const scx = x + f * h * 0.13, scy = by - h * 0.58 + drop;
     pShadeEll(S, ctx, scx, scy, h * 0.12, h * 0.15, R('#6a5a4a', 5));
-    pShadeEll(S, ctx, scx, scy, h * 0.1, h * 0.13, team ? teamR : R('#8a3a2a'));
+    pShadeEll(S, ctx, scx, scy, h * 0.1, h * 0.13, sp.shieldC ? R(sp.shieldC) : team ? teamR : R('#8a3a2a'));
     pLine(S, scx, scy - h * 0.1, scx, scy + h * 0.1, shade(trimR, 0.7), 1); pLine(S, scx - h * 0.07, scy - h * 0.02, scx + h * 0.07, scy - h * 0.02, shade(trimR, 0.7), 1);
   }
   // front arm and what it holds
   const fh = hand(f);
-  pShadeCap(S, ctx, fs[0], fs[1], fh[0], fh[1], h * 0.038, h * 0.032, armR);
+  pShadeCap(S, ctx, fs[0], fs[1], fh[0], fh[1], h * 0.038, h * 0.032, sp.manica ? metalR : armR);
   const it = sp.item || 'none', ang = sp.pose === 'raise' ? -Math.PI / 2 - f * 0.25 : sp.pose === 'strike' ? (f > 0 ? -0.35 : Math.PI + 0.35) : -Math.PI / 2 + f * 0.35;
-  if (it === 'sword' || it === 'axe') {
+  if (it === 'rifle') {                                             // a rifle, levelled when aiming, carried across the body otherwise
+    const gunR = R('#4a3a2a', 4), steel = shade(darkR, 0.25), th = h > 45 ? 2 : 1;
+    if (aim) { pLine(S, x + f * h * 0.02, fh[1] + h * 0.02, fh[0] + f * h * 0.24, fh[1] - h * 0.01, shade(gunR, 0.45), th); pLine(S, fh[0], fh[1] - h * 0.005, fh[0] + f * h * 0.3, fh[1] - h * 0.02, steel, 1); }
+    else { pLine(S, x - f * h * 0.12, by - h * 0.38 + drop, fh[0] + f * h * 0.08, by - h * 0.86 + drop, shade(gunR, 0.45), th); pLine(S, fh[0] + f * h * 0.04, by - h * 0.78 + drop, fh[0] + f * h * 0.12, by - h * 0.96 + drop, steel, 1); }
+  } else if (it === 'sword' || it === 'axe') {
     const len = h * 0.42, ex = fh[0] + Math.cos(ang) * len, ey = fh[1] + Math.sin(ang) * len;
     pLine(S, fh[0], fh[1], ex, ey, shade(metalR, 0.85), h > 50 ? 2 : 1);
     pLine(S, fh[0] - Math.sin(ang) * h * 0.05, fh[1] + Math.cos(ang) * h * 0.05, fh[0] + Math.sin(ang) * h * 0.05, fh[1] - Math.cos(ang) * h * 0.05, shade(R('#c8a040', 4), 0.6), 1);
@@ -2782,6 +2889,341 @@ function makePalm(ctx, bx, by, h, lean, seed) {
   return trim(S);
 }
 
+// ---------- COLOSSEUM: two gladiators duel on the sand of an elliptical arena. The bowl is swept column by column: for
+// each screen column the view ray meets the podium wall, then each tier of seating and the arched walls above it ----------
+function buildArena(ctx) {
+  const { W, H, U, set, rig } = ctx, r = makeRng(ctx.seed * 37 + 11), S = ctx.backLand, SEA = ctx.S;
+  ctx.skyBottom = H * 0.35; paintSky(ctx);
+  const cx = W * 0.5, vy = H * 0.5, f = H * 0.72, eye = 1.7, camZ = -19, A = 40, B = 27;
+  // the cross-section of the stands, outward from the arena's edge: [radius offset m, height m, kind]
+  const P = [[0, 0, 'podium'], [0, 4, 'rail'], [1.4, 4.5, 'seats'], [15, 14, 'arches'], [15, 16.6, 'seats'], [26, 24.5, 'arches'], [26, 27, 'seats'], [33, 31, 'attic'], [33, 38, 'end']];
+  const depth = (dx, rr) => { const a = A + rr, b = B + rr, qa = dx * dx / (a * a) + 1 / (b * b), qb = 2 * camZ / (b * b), qc = camZ * camZ / (b * b) - 1; return (-qb + Math.sqrt(qb * qb - 4 * qa * qc)) / (2 * qa); };
+  const stone = hex('#d9c8a4'), marble = hex('#e8e0cc'), litSide = rig.side < 0 ? 0 : Math.PI;
+  const amb = rig.amb, sun = rig.sun, hz = rig.hazeC;
+  const light = (alb, k) => [clamp01(alb[0] * (amb[0] * 1.15 + sun[0] * k * 0.66)), clamp01(alb[1] * (amb[1] * 1.15 + sun[1] * k * 0.66)), clamp01(alb[2] * (amb[2] * 1.15 + sun[2] * k * 0.66))];
+  const tunics = ['#b0503e', '#d8d0bc', '#5a6a90', '#c09048', '#6a7a4a', '#7a5a7a', '#c07a4a', '#e0dccc', '#5a5a60'].map((c) => mixc(hex(c), hex('#c8b89a'), 0.25)), skins = SKIN.map(hex);
+  const heads = [], floorY = new Float32Array(W);
+  for (let x = 0; x < W; x++) {
+    const dx = (x + 0.5 - cx) / f;
+    let yPrev = vy + eye * f / depth(dx, 0);
+    floorY[x] = yPrev;
+    for (let i = 0; i + 1 < P.length; i++) {
+      const [r0, h0, kind] = P[i], [r1, h1] = P[i + 1], N = kind === 'seats' ? 48 : 6;
+      for (let k = 1; k <= N; k++) {
+        const u = k / N, rr = lerp(r0, r1, u), hh = lerp(h0, h1, u), Z = depth(dx, rr), y = vy + (eye - hh) * f / Z;
+        const X = dx * Z, Zw = camZ + Z, phi = Math.atan2(Zw / (B + rr), X / (A + rr)), sunK = 0.25 + 0.75 * clamp01(0.5 + 0.6 * Math.cos(phi - litSide));
+        const circ = phi * ((A + B) / 2 + rr), fog = clamp01((Z - 20) / 160) * 0.45 * rig.hazeK;
+        for (let yy = Math.floor(y); yy < yPrev; yy++) {
+          if (yy < 0 || yy >= H) continue;
+          const hy_ = eye - (yy + 0.5 - vy) * Z / f;                        // the height on the surface at this pixel
+          let c;
+          if (kind === 'podium' || kind === 'arches' || kind === 'attic') {
+            const bay = ((circ % 3.6) + 3.6) % 3.6, hp = hy_ - h0, span = h1 - h0;
+            let alb = kind === 'podium' ? marble : stone;
+            if (bay < 0.35) alb = scalec(alb, 1.08);                                  // pilasters
+            if (kind === 'arches' && bay > 0.8 && bay < 2.8 && hp < span * 0.78) { const ax = (bay - 1.8) / 1.0, top = span * 0.55 + Math.sqrt(Math.max(0, 1 - ax * ax)) * span * 0.23; if (hp < top) alb = hex('#2a2420'); }
+            if (kind === 'attic' && bay > 1.2 && bay < 2.4 && hp > span * 0.3 && hp < span * 0.62) alb = hex('#3a3028');
+            if (kind === 'podium') {
+              if (hp > span * 0.86) alb = scalec(marble, 1.1);                           // the cornice
+              if (hp < span * 0.12) alb = scalec(marble, 0.8);
+              const g = Math.abs(hp - (span * 0.7 - 0.5 * Math.sin((bay / 3.6) * Math.PI) * 1.4));   // garlands swagged between the pilasters
+              if (set.season !== 'winter' && g < 0.22) alb = hash2(Math.floor(circ * 3), Math.floor(hp * 4), 5) > 0.7 ? hex('#f0a0c0') : hex('#4a8a3a');
+              const gate = Math.abs(((phi / TAU) * 4 + 8) % 1 - 0.5) < 0.012 && hp < span * 0.8; if (gate) alb = hex('#1e1a18');
+            }
+            c = light(scalec(alb, 0.95 + 0.1 * vnoise(circ * 0.8, hy_ * 0.8, 3)), sunK);
+          } else if (kind === 'rail') c = light(marble, sunK * 0.9);
+          else {                                                                      // seating: steps packed with spectators
+            const step = Math.floor(hy_ / 0.42), f2 = (hy_ / 0.42) % 1, aisle = Math.abs(((circ / 9) % 1 + 1) % 1 - 0.5) > 0.47;
+            const cell = Math.floor(circ / 0.55), occ = !aisle && hash2(cell, step, ctx.seed) < set.crowd * (0.7 + 0.3 * vnoise(circ * 0.05, step * 0.2, 9));
+            if (occ) {
+              const hk = hash2(step, cell, ctx.seed + 1);
+              c = light(f2 > 0.62 ? skins[Math.floor(hk * skins.length)] : tunics[Math.floor(hk * 97) % tunics.length], sunK * 0.95);
+              if (f2 < 0.16) c = scalec(c, 0.62);                                   // the shadow of the row in front
+              if (f2 > 0.62 && hash2(cell, step, 7) < 0.25 && heads.length < 4000) heads.push(yy * W + x);
+            } else c = light(scalec(stone, f2 < 0.3 ? 0.78 : 1), sunK);
+          }
+          put(S, x, yy, mixc(c, hz, fog));
+        }
+        yPrev = Math.min(yPrev, y);
+      }
+    }
+    // masts along the rim, and the sky above
+    const Ztop = depth(dx, 33), ytop = vy + (eye - 38) * f / Ztop, bay = (((Math.atan2((camZ + Ztop) / (B + 33), dx * Ztop / (A + 33)) * ((A + B) / 2 + 33)) % 7.2) + 7.2) % 7.2;
+    if (bay < 0.3) for (let yy = Math.floor(ytop - 5 * f / Ztop); yy < ytop; yy++) put(S, x, yy, mixc([0.35, 0.28, 0.22], hz, 0.3));
+    if (set.banners && bay > 0.3 && bay < 1.6) { const fy = ytop - 5 * f / Ztop; for (let yy = Math.floor(fy); yy < fy + 1.6 * f / Ztop; yy++) put(S, x, yy, mixc(hex(Math.floor(((x / W) * 7)) % 2 ? '#8a2a8a' : '#c83a32'), hz, 0.25)); }
+  }
+  // the emperor's box, across the arena
+  { const Z = depth(0, 0), bx = cx, by = vy + (eye - 4) * f / Z, bw = 7 * f / Z, bh = 3.4 * f / Z;
+    for (let y = Math.floor(by - bh); y < by; y++) for (let x = Math.floor(bx - bw / 2); x < bx + bw / 2; x++) { const u = (x - bx) / (bw / 2), top = y < by - bh * 0.72; put(S, x, y, top ? (Math.floor((x - bx) / Math.max(1, bw / 10)) % 2 ? hex('#7a2a7a') : hex('#b83a3a')) : (Math.abs(Math.abs(u) - 0.92) < 0.06 ? hex('#e8c050') : mixc(hex('#3a2a28'), [0, 0, 0], 0.3))); }
+    for (let x = Math.floor(bx - bw / 2); x < bx + bw / 2; x++) if (Math.sin((x - bx) * 1.3) > 0) put(S, x, by - bh * 0.72, hex('#e8c050')); }
+  // ---- the sand, raked in rings, trampled where the fight is ----
+  const sand = hex(SEA.snow ? '#e8e8ee' : '#dcc08a');
+  for (let x = 0; x < W; x++) for (let y = Math.max(0, Math.floor(floorY[x])); y < H; y++) {
+    const Z = eye * f / (y + 0.5 - vy), X = (x + 0.5 - cx) / f * Z, Zw = camZ + Z, e = Math.hypot(X / A, Zw / B);
+    let k = 0.9 + 0.1 * vnoise(X * 0.8, Zw * 0.8, 5) + (hash2(x, y, 3) - 0.5) * 0.06;
+    if (((e * 40) % 1) < 0.1 && Z > 6) k -= 0.06;
+    const fight = Math.hypot(X, Zw - (camZ + 4.6)); k -= 0.12 * smooth(3.5, 0.5, fight) * vnoise(X * 3, Zw * 3, 7);
+    const shadowed = X * rig.side > 0 ? smooth(0.72, 0.95, e) : 0;                       // the rim's shadow on the sun side
+    put(S, x, y, mixc(light(scalec(sand, k), 1 - shadowed * 0.75), hz, clamp01((Z - 20) / 160) * 0.3));
+  }
+  // ---- the gladiators, the referee, their shadows ----
+  const items = [], fz = 4.6, fy = vy + eye * f / fz, fh = 1.85 * f / fz;
+  for (const sx of [-1.05, 1.05]) { const x0 = cx + sx * f / fz; for (let y = Math.floor(fy - fh * 0.05); y < fy + fh * 0.05; y++) for (let x = Math.floor(x0 - fh * 0.2); x < x0 + fh * 0.2; x++) { const d = Math.hypot((x - x0) / (fh * 0.2), (y - fy) / (fh * 0.05)); if (d < 1) { const q = get(S, x, y); if (q) put(S, x, y, scalec(q, 0.72)); } } }
+  const glad = [
+    { x: cx - 1.05 * f / fz, sp: { facing: 1, bare: true, top: '#f0ece0', skin: SKIN[2], hat: 'galea', crestC: '#c83a32', shield: true, shieldShape: 'rect', shieldC: '#b0302a', item: 'sword', manica: true, greaves: true, boots: '#6a4a2a' } },
+    { x: cx + 1.05 * f / fz, sp: { facing: -1, bare: true, top: '#e8d8b0', skin: SKIN[1], hat: 'galea', crestC: '#3a5ac8', shield: true, shieldC: '#2a5aa8', item: 'sword', manica: true, greaves: true, boots: '#6a4a2a' } }
+  ];
+  glad.forEach((g, i) => {
+    const P1 = personSprite(ctx, g.x, fy, fh, g.sp, ctx.seed + 300 + i, 'fight');
+    P1.ph = i * 2; P1.fps = 2.6; P1.sway = { kind: 'shift', amp: 2.5 * U * (i ? -1 : 1), ph: 0, sp: 1.3 };
+    items.push(P1);
+  });
+  if (set.referee) { const rz = 6.8, rx = cx + 2.7 * f / rz, ry = vy + eye * f / rz; items.push(personSprite(ctx, rx, ry, 1.8 * f / rz, { facing: -1, top: '#f2eee4', dress: '#f2eee4', skin: SKIN[1], hair: HAIR[7], hairStyle: 'short', item: 'staff' }, ctx.seed + 310)); }
+  if (set.awning) {                                                                    // the velarium: striped sailcloth hauled over the stands
+    const Sx = surface(0, 0, W, H * 0.3);
+    for (let x = 0; x < W; x++) { const edge = H * (0.06 + 0.08 * Math.pow(Math.abs(x - cx) / (W / 2), 2)) + 3 * U * Math.sin(x * 0.05); for (let y = 0; y < edge; y++) put(Sx, x, y, light(hex(Math.floor((Math.atan2(y + H * 0.4, x - cx) * 18)) % 2 ? '#e8dcc0' : '#c8764a'), 0.35 + 0.4 * (y / edge))); }
+    items.push({ S: trim(Sx), y: -1, sway: { kind: 'shift', amp: 0.5 * U, ph: 0, sp: 0.4 } });
+  }
+  ctx.focus = [0.5, (fy - fh * 0.5) / H];
+  ctx.fx.push({ kind: 'crowd', layer: 'land', heads, skin: skins });
+  const parts = [{ kind: 'dust', n: 26, x: glad.map((g) => g.x), y: fy / H }];
+  if (set.particles && set.season === 'spring') parts.push({ kind: 'petals', n: 36 });
+  if (set.birds) parts.push({ kind: 'birds', n: 4 });
+  return { sprites: flattenItems(items), particles: parts, clouds: buildClouds(ctx), stars: ctx.stars };
+}
+
+// ---------- WAR BEACH: a 1944 landing. Seen from the surf: wet sand, steel hedgehogs, stakes and wire, craters, soldiers
+// advancing up the beach toward a concrete bunker on the bluff that sweeps it with machine-gun fire ----------
+function buildWar(ctx) {
+  const { W, H, U, set, rig } = ctx, r = makeRng(ctx.seed * 41 + 13), S = ctx.backLand;
+  const rg = ctx.rig;                                                              // an overcast morning: grey sky, leaden clouds
+  rg.top = mixc(rg.top, hex('#6a7078'), 0.6); rg.midC = mixc(rg.midC, hex('#8a9094'), 0.6); rg.hor = mixc(rg.hor, hex('#b0b2aa'), 0.55); rg.cloudLit = '#b4b6b0'; rg.cloudShade = '#5a5e62'; rg.sunGlow *= 0.3; rg.sunR = 0;
+  ctx.skyBottom = H * 0.42; paintSky(ctx);
+  const hy = H * 0.4; ctx.hy = hy; ctx.fogY = 0.3; ctx.fogK = 0.6; ctx.rainGround = 0.5;
+  // a headland lost in the haze, then the bluffs
+  ctx.groundEdge = new Float32Array(W).fill(H * 0.5); ctx.groundMaxY = H * 0.5;
+  paintRange(ctx, { kind: 'hill', base: H * 0.4, amp: H * 0.05, freq: 1.2 / W, off: r.range(0, 50), haze: 0.65, albedo: '#5a6048', seed: ctx.seed + 1 });
+  const bunkerX = W * r.range(0.58, 0.7), bluff = (x) => H * (0.37 + 0.02 * (fbm1(x * 0.01 / U, ctx.seed + 2, 3) - 0.5) * 4) - H * 0.035 * Math.exp(-Math.pow((x - bunkerX) / (W * 0.12), 2));
+  const grassR = makeRamp(rig, '#6a6a44', 6), sandR = makeRamp(rig, '#a89a78', 7, { sat: 0.1 });
+  for (let x = 0; x < W; x++) {
+    const top = bluff(x), slope = bluff(x + 1) - bluff(x - 1);
+    for (let y = Math.floor(top); y < H * 0.5; y++) {
+      const d = (y - top) / (H * 0.5 - top), v = 0.5 + clamp(slope * rig.side * 0.6, -0.3, 0.3) + (vnoise(x * 0.3 / U, y * 0.4 / U, ctx.seed + 3) - 0.5) * 0.35;
+      const sandy = d > 0.55 + 0.25 * vnoise(x * 0.05 / U, 1, ctx.seed + 4);
+      put(S, x, y, mixc(shade(sandy ? sandR : grassR, v), rig.hazeC, 0.3));
+    }
+    if (x % Math.round(9 * U) === 0) for (let k = 0; k < 4 * U; k++) put(S, x, top - k, mixc([0.25, 0.22, 0.18], rig.hazeC, 0.35));           // fence posts along the crest
+    if (Math.sin(x * 0.9) > 0.6) put(S, x, top - 2 * U - (x % 3 === 0 ? 1 : 0), mixc([0.2, 0.2, 0.2], rig.hazeC, 0.4));                       // wire
+  }
+  // the bunker, dug into the bluff, its slit facing the beach
+  const bw = W * 0.12, bh = H * 0.07, bTop = bluff(bunkerX) - bh * 0.55, conc = makeRamp(rig, '#8a8a82', 7, { sat: 0.05 }), dark = [0.06, 0.06, 0.06];
+  for (let y = Math.floor(bTop); y < bTop + bh; y++) for (let x = Math.floor(bunkerX - bw / 2); x < bunkerX + bw / 2; x++) {
+    const u = (x - (bunkerX - bw / 2)) / bw, v = (y - bTop) / bh, lean = v * bw * 0.08;
+    if (u * bw < lean * 0.5 || (1 - u) * bw < lean * 0.5) continue;
+    let val = 0.55 - v * 0.2 + (vnoise(x * 0.4 / U, y * 0.4 / U, 9) - 0.5) * 0.3 - (u - 0.5) * rig.side * 0.3;
+    if (hash2(Math.floor(x / 3), Math.floor(y / 3), 4) > 0.9) val -= 0.2;                                                                   // pocked concrete
+    put(S, x, y, mixc(shade(conc, val), rig.hazeC, 0.22));
+    if (v < 0.12) put(S, x, y, mixc(shade(grassR, 0.4 + hash2(x, y, 2) * 0.3), rig.hazeC, 0.25));                                     // turf on the roof
+  }
+  const slitY = bTop + bh * 0.42;
+  for (let y = Math.floor(slitY - bh * 0.07); y < slitY + bh * 0.07; y++) for (let x = Math.floor(bunkerX - bw * 0.32); x < bunkerX + bw * 0.32; x++) put(S, x, y, dark);
+  for (let x = 0; x < bw * 0.12; x++) put(S, bunkerX - rig.side * 0 - x * 0.9, slitY, [0.15, 0.15, 0.14]);                              // the barrel
+  // ---- the beach: dry sand, a band of shingle, wet sand, the surf at our feet ----
+  const wetR = makeRamp(rig, '#7a735e', 7, { sat: 0.08 }), shR = makeRamp(rig, '#8a8a86', 6), dryR = makeRamp(rig, '#b0a384', 7, { sat: 0.08 }), seaC = mixc(hex('#4a5a58'), rig.hor, 0.35);
+  const water = (x) => H * (0.8 + 0.22 * (x / W)) + 3 * U * Math.sin(x * 0.03);
+  for (let y = Math.floor(H * 0.5); y < H; y++) {
+    const p = (y + 0.5 - hy) / (H - hy), Z = 1 / p;
+    for (let x = 0; x < W; x++) {
+      const X = (x + 0.5 - W / 2) / (p * W), wl = water(x);
+      if (y >= wl) { let c = mixc(seaC, [0.85, 0.88, 0.86], vnoise(x * 0.08 / U, y * 0.8 / U, 3) > 0.7 ? 0.5 : 0); put(S, x, y, c); ctx.water.push(y * W + x); continue; }
+      let v = 0.5 + (fbm(X * 2, Z * 0.8, ctx.seed + 5, 3) - 0.5) * 0.6 + (hash2(x, y, 6) - 0.5) * 0.1;
+      let ramp = dryR;
+      if (p > 0.18 && p < 0.3) { ramp = shR; v += (hash2(Math.floor(x / Math.max(1, p * 3 * U)), Math.floor(y / Math.max(1, p * 2 * U)), 7) - 0.5) * 0.6; }
+      else if (p >= 0.45) { ramp = wetR; if (fbm(X * 1.5, Z * 0.6, ctx.seed + 8, 2) > 0.55) { put(S, x, y, mixc(shade(wetR, v), rig.hor, 0.35)); ctx.water.push(y * W + x); continue; } }
+      put(S, x, y, mixc(shade(ramp, v), rig.hazeC, clamp01((1 - p) * 0.55)));
+    }
+  }
+  ctx.fx.push({ kind: 'surf', layer: 'land', shore: Float32Array.from({ length: W }, (_, x) => water(x) - 2 * U), reach: 6 * U, ph: 1, c: [0.86, 0.88, 0.86], water: seaC, bands: [] });
+  // craters
+  const nc = Math.round(3 + set.smoke * 5), blasts = [], smokes = [];
+  for (let i = 0; i < nc; i++) {
+    const p = r.range(0.2, 0.8), y = hy + p * (H - hy), x = r.range(0.1, 0.9) * W, rx = H * 0.07 * p, ry = rx * 0.32;
+    if (y > water(x) - 4 * U) continue;
+    for (let yy = Math.floor(y - ry * 1.4); yy < y + ry * 1.3; yy++) for (let xx = Math.floor(x - rx * 1.3); xx < x + rx * 1.3; xx++) { const d = Math.hypot((xx - x) / rx, (yy - y) / ry), q = get(S, xx, yy); if (!q) continue; if (d < 1) put(S, xx, yy, scalec(q, 0.55 + 0.25 * d * (yy < y ? 0.5 : 1))); else if (d < 1.3) put(S, xx, yy, scalec(q, 1.12)); }
+    if (i < 3) smokes.push({ x, y: y - ry, h: H * 0.5, v: 5 * U, r: rx * 0.9, n: 7, drift: 30 * U, a: 0.45 * set.smoke + 0.1, c: [0.24, 0.24, 0.22] });
+  }
+  for (let i = 0; i < Math.round(1 + set.smoke * 3); i++) { const p = r.range(0.2, 0.55); blasts.push({ x: r.range(0.1, 0.9) * W, y: hy + p * (H - hy), s: H * 0.03 * p + 1, period: r.range(5, 9), ph: r.range(0, 9) }); }
+  // ---- obstacles, the landing craft, the soldiers ----
+  const items = [], steel = makeRamp(rig, '#4a4640', 6, { sat: 0.05 }), wood = makeRamp(rig, '#5a4a36', 5);
+  const nObs = Math.round(4 + set.obstacles * 14), cover = [];
+  for (let i = 0; i < nObs; i++) {
+    const p = r.range(0.25, 0.95), by = hy + p * (H - hy), x = r.range(0.02, 0.98) * W, s = H * 0.13 * p;
+    if (by > water(x)) continue;
+    const Sx = surface(x - s, by - s * 1.3, s * 2, s * 1.4);
+    if (i % 3 === 2) { const lean = r.range(-0.4, 0.4); pShadeCap(Sx, ctx, x, by, x + lean * s * 0.5, by - s * 0.95, s * 0.05 + 0.4, s * 0.04 + 0.4, wood); pShadeEll(Sx, ctx, x + lean * s * 0.47, by - s * 0.92, s * 0.08 + 0.5, s * 0.06 + 0.5, steel); }   // a stake with a mine
+    else { for (const [a, b] of [[[-0.5, 0], [0.45, -0.75]], [[0.5, 0], [-0.4, -0.72]], [[0, -0.05], [0.05, -0.95]]]) pShadeCap(Sx, ctx, x + a[0] * s, by + a[1] * s, x + b[0] * s, by + b[1] * s, s * 0.05 + 0.5, s * 0.05 + 0.5, steel); cover.push({ x, by, p }); }   // a steel hedgehog
+    items.push({ S: trim(Sx), y: by });
+  }
+  for (let k = 0; k < 2; k++) {                                                          // rolls of barbed wire across the beach
+    const p = 0.34 + k * 0.12, by = hy + p * (H - hy), Sx = surface(0, by - H * 0.03 * p - 4, W, H * 0.04 * p + 6), wc = mixc([0.18, 0.18, 0.18], rig.hazeC, (1 - p) * 0.5);
+    for (let x = 0; x < W; x++) { const ph = x / (H * 0.025 * p + 2); put(Sx, x, by - Math.abs(Math.sin(ph)) * H * 0.02 * p, wc); if (Math.floor(ph * 2) % 3 === 0) put(Sx, x, by - H * 0.01 * p, wc); }
+    items.push({ S: trim(Sx), y: by });
+  }
+  if (set.craft) {                                                                        // a landing craft run up in the surf, ramp down
+    const cx0 = W * 0.13, cy = H * 0.97, cw = W * 0.3, chh = H * 0.2, hull = makeRamp(rig, '#5a6258', 7, { sat: 0.05 });
+    const Sx = surface(cx0 - cw * 0.6, cy - chh * 1.2, cw * 1.3, chh * 1.3);
+    pPoly(Sx, ctx, [[cx0 - cw * 0.5, cy - chh * 0.2], [cx0 + cw * 0.28, cy - chh * 0.55], [cx0 + cw * 0.42, cy - chh * 0.2], [cx0 + cw * 0.3, cy], [cx0 - cw * 0.5, cy]], hull, { dv: -0.1 });
+    pPoly(Sx, ctx, [[cx0 + cw * 0.28, cy - chh * 0.55], [cx0 + cw * 0.55, cy - chh * 0.28], [cx0 + cw * 0.62, cy - chh * 0.06], [cx0 + cw * 0.42, cy - chh * 0.2]], hull, { dv: 0.15 });  // the ramp
+    for (let k = 0; k < 4; k++) pLine(Sx, cx0 + cw * (0.33 + k * 0.07), cy - chh * (0.48 - k * 0.07), cx0 + cw * (0.3 + k * 0.07), cy - chh * (0.22 - k * 0.04), shade(hull, 0.3), 1);
+    items.push({ S: trim(Sx), y: cy - 1 });
+  }
+  const nt = Math.round(5 + set.troops * 17), pr = makeRng(ctx.seed * 3 + 7);
+  const olive = ['#5c5a3c', '#62603e', '#565a3a', '#6a6446'];
+  for (let i = 0; i < nt; i++) {
+    let x, by, p, pose = 'walk', f = 1;
+    const cv = cover.length && i % 3 === 0 ? cover[i % cover.length] : null;
+    if (cv) { p = cv.p; by = cv.by + 1; x = cv.x - H * 0.05 * p; pose = pr() < 0.6 ? 'aimlow' : 'crouch'; }
+    else { p = pr.range(0.3, 1); by = hy + p * (H - hy); x = pr.range(0.02, 0.95) * W; pose = pr() < 0.55 ? 'walk' : pr() < 0.5 ? 'aim' : 'crouch'; if (by > water(x) + 6 * U) by = water(x) + 2 * U; }
+    const h = H * 0.3 * p, sp = { facing: 1, top: pr.pick(olive), bottom: pr.pick(olive), boots: '#3a3024', skin: pr.pick(SKIN), hat: 'm1', hatC: '#4c5034', item: 'rifle', pack: true, pose: pose === 'walk' ? 'stand' : pose };
+    if (i === 1) { sp.pose = 'raise'; sp.item = 'none'; }                                  // an officer waving the others on
+    const P = personSprite(ctx, x, by, h, sp, ctx.seed + 500 + i, pose === 'walk' ? 'walk' : null);
+    if (pose === 'walk') { P.fps = 6; P.drift = { x0: x, vx: pr.range(3, 7) * U * p, min: -h, span: W + 2 * h }; }
+    items.push(P);
+  }
+  const mx = bunkerX, my = slitY;
+  if (set.mg) ctx.fx.push({ kind: 'mg', layer: 'front', x: mx, y: my, dir: -1 });
+  if (smokes.length) ctx.fx.push({ kind: 'smoke', layer: 'land', list: smokes });
+  if (blasts.length) ctx.fx.push({ kind: 'blasts', layer: 'front', list: blasts });
+  ctx.focus = [0.42, 0.72];
+  const parts = [];
+  if (set.mg) { parts.push({ kind: 'tracers', n: 10, x: mx, y: my, tx0: 0.05, tx1: 0.75, ty0: 0.55, ty1: 0.95 }); parts.push({ kind: 'impacts', n: 14, x0: 0.05, x1: 0.8, y0: 0.55, y1: 0.95 }); }
+  return { clouds: buildClouds(ctx), sprites: flattenItems(items), stars: ctx.stars, water: ctx.water, glint: 0.992, particles: parts };
+}
+
+// ---------- CASTLE REALM: a castle on a far mountain peak above a valley of cherry trees; a great stepped stone road
+// runs from your feet toward it, lined with stone lanterns; mist, sun rays and drifting motes make it mystical ----------
+function buildRealm(ctx) {
+  const { W, H, U, set, rig } = ctx, r = makeRng(ctx.seed * 43 + 17), S = ctx.backLand, SEA = ctx.S;
+  const autumn = set.season === 'autumn', winter = SEA.snow > 0;
+  const cherry = autumn ? ['#d8404a', '#e8687a', '#f0906a', '#c83848'] : winter ? ['#e8e4ee', '#d8c8d8'] : ['#f4b8cc', '#f0a0bc', '#fad0dc', '#e890b0'];
+  const cherryR = cherry.map((c) => makeRamp(rig, c, 7, { sat: rig.sat * 1.2 }));
+  const lit = rig.night || ['dusk', 'sunset'].includes(set.time);
+  ctx.skyBottom = H * 0.58; paintSky(ctx);
+  const hy = H * 0.56; ctx.hy = hy; ctx.fogY = 0.42; ctx.fogK = 0.3 + set.mist * 0.5; ctx.fogC = mixc(rig.hazeC, [0.9, 0.75, 0.85], 0.35);
+  const castleX = W * (0.6 + r.range(-0.06, 0.06)), side = castleX > W / 2 ? -1 : 1;
+  ctx.xv = castleX / W;
+  if (rig.sunY > 0 && !rig.night) ctx.fx.push({ kind: 'sunrays', layer: 'sky', x: rig.sunX * W, y: rig.sunY * H, k: 0.22, c: mixc(rig.sunC, [1, 0.7, 0.8], 0.3), seed: ctx.seed + 3 });
+  // ---- the mountains: a far range, then the castle's peak ----
+  ctx.groundEdge = new Float32Array(W).fill(H * 0.62); ctx.groundMinY = H * 0.6; ctx.groundMaxY = H * 0.64;
+  paintRange(ctx, { kind: 'mount', base: H * 0.5, amp: H * 0.16, freq: 2.8 / W, off: r.range(0, 50), haze: 0.66, albedo: '#8a7a98', snow: winter ? 1 : 0.4, seed: ctx.seed + 1, dip: 0.2 });
+  const peak = { kind: 'peak', base: H * 0.56, amp: H * 0.36, px: castleX, pw: W * 0.26, freq: 3 / W, off: r.range(0, 50), haze: 0.42, albedo: '#7a6e84', snow: winter ? 1.1 : 0.25, seed: ctx.seed + 2 };
+  paintRange(ctx, peak);
+  const peakTop = ridgeY(ctx, peak, castleX);
+  // the castle on the summit
+  const cw = W * 0.085, glows = [];
+  if (set.castleStyle === 'western') paintCastle(S, ctx, castleX, peakTop + cw * 0.12, cw * 2.2, cw * 1.4, lit, glows, [], 0);
+  else if (set.castleStyle !== 'none') paintKeep(S, ctx, castleX, peakTop + cw * 0.15, cw, lit, glows);
+  // a switchback trail climbing the face to the gate
+  if (set.stonepath) {
+    const pc = mixc(hex('#d8ccb8'), rig.hazeC, 0.45); let x = castleX + side * W * 0.1, y = H * 0.56, dir = -side, k = 0;
+    const halfW = (yy) => peak.pw * (1 - Math.pow(clamp01((peak.base - yy) / peak.amp), 1 / 1.5));   // the peak's half-width at a height
+    x = castleX + side * halfW(y) * 0.6;
+    while (y > peakTop + cw * 0.3 && k < 12) { const ny = y - H * 0.035, nx = castleX + dir * halfW(ny) * 0.62; pLine(S, x, y, nx, ny, pc, 1); x = nx; y = ny; dir = -dir; k++; }
+    pLine(S, x, y, castleX, peakTop + cw * 0.3, pc, 1);
+  }
+  // ---- nearer hills cloaked in cherry trees ----
+  paintRange(ctx, { kind: 'hill', base: H * 0.6, amp: H * 0.05, freq: 2.4 / W, off: r.range(0, 50), haze: 0.3, albedo: autumn ? '#9a4a5a' : '#c888a8', forest: 1, seed: ctx.seed + 4, dip: 0.9 });
+  // ---- the ground and the stone road ----
+  const grassR = makeRamp(rig, winter ? MAT.snow : autumn ? '#9a8a44' : SEA.grass, 7), stoneR = makeRamp(rig, '#aaa49c', 8, { sat: 0.08 }), mossC = shade(makeRamp(rig, '#4a6a3a', 4), 0.4);
+  const pPh = r.range(0, TAU), pathX = (p) => W * (lerp(castleX / W + side * 0.04, 0.5, Math.pow(p, 0.85)) + 0.07 * p * Math.sin(pPh + 1.5 / Math.max(p, 0.08))), pathHW = (p) => W * 0.2 * p + 1;
+  const y0 = Math.floor(H * 0.6);
+  for (let y = y0; y < H; y++) {
+    const p = (y + 0.5 - hy) / (H - hy), Zm = 12 / p, cxp = pathX(p), hw = pathHW(p), ppm = 0.176 * H * p / 1.7;
+    for (let x = 0; x < W; x++) {
+      const a = (x + 0.5 - cxp) / hw, X = (x + 0.5 - W / 2) / (p * W);
+      if (set.stonepath && Math.abs(a) < 1) {                                           // stone slabs in courses, a step every few courses
+        const row = Math.floor(Zm / 1.1), ac = a * 2.6 + (row % 2) * 0.5, col = Math.floor(ac), fu = ac - col, fz = (Zm / 1.1) % 1;
+        let v = 0.52 + (hash2(col, row, ctx.seed) - 0.5) * 0.25 - a * rig.side * -0.1;
+        if (ppm * 1.1 > 3 && (fu < 0.07 || fz < 0.09)) { put(S, x, y, mixc(mossC, rig.hazeC, clamp01((1 - p) * 0.4))); continue; }
+        const st = (Zm % 6.6) / 6.6; if (st < 0.04) v -= 0.35; else if (st > 0.96) v += 0.18;   // a step's riser and lip
+        if (Math.abs(a) > 0.9) v -= 0.12;                                                  // kerb stones
+        let c = shade(stoneR, v);
+        if (!winter && hash2(x, y, ctx.seed + 3) > 0.985) c = hex(cherry[(x + y) % cherry.length]);   // fallen petals
+        put(S, x, y, mixc(c, rig.hazeC, clamp01((1 - p) * 0.4)));
+        continue;
+      }
+      let v = 0.5 + (fbm(X * 1.4, 1 / p * 0.5, ctx.seed + 5, 3) - 0.5) * 0.7 + (vnoise(x * 0.8 / U, y * 0.3 / U, ctx.seed + 6) - 0.5) * 0.3 * p;
+      let c = shade(grassR, v);
+      if (!winter && hash2(x, y, ctx.seed + 7) > 0.992 - 0.01 * p) c = hex(cherry[(x * 7 + y) % cherry.length]);
+      put(S, x, y, mixc(c, rig.hazeC, clamp01((1 - p) * 0.45)));
+    }
+  }
+  // ---- lanterns and cherry trees lining the road ----
+  const items = [], lanterns = [];
+  for (let Zm = 18; Zm < 120; Zm += 13) {
+    const p = 12 / Zm, y = hy + p * (H - hy); if (y < y0) continue;
+    for (const s of [-1, 1]) {
+      const x = pathX(p) + s * pathHW(p) * 1.18, ppm = 0.176 * H * p / 1.7;
+      if (set.stonelamps && set.stonepath) { const L = makeStoneLantern(ctx, x, y, 1.7 * ppm, lit, ctx.seed + Zm * 3 + s); items.push({ S: L, y }); if (lit) lanterns.push({ x, y: y - 1.2 * ppm, r: Math.max(3 * U, 1.5 * ppm), c: [1, 0.72, 0.4], k: 0.5, ph: Zm }); }
+      if (r() < set.blossom) {                                                             // a cherry tree set back from the road
+        const tx = x + s * pathHW(p) * r.range(0.4, 1.4), th = r.range(5, 8) * ppm, Sx = surface(tx - th, y - th * 1.1, th * 2, th * 1.15);
+        paintRoundTree(Sx, ctx, tx, y, th, cherryR[r.int(0, cherryR.length - 1)], clamp01((1 - p) * 0.35), ctx.seed + Zm * 7 + s);
+        items.push({ S: trim(Sx), y: y - 0.5, sway: p > 0.35 ? { kind: 'shift', amp: 0.6 * U, ph: r() * TAU, sp: 0.7 } : null });
+      }
+    }
+  }
+  // more cherry trees scattered through the valley
+  for (let i = 0; i < Math.round(set.blossom * 40); i++) {
+    const p = r.range(0.12, 0.35), y = hy + p * (H - hy), x = r.range(0, 1) * W; if (Math.abs(x - pathX(p)) < pathHW(p) * 1.6) continue;
+    paintRoundTree(S, ctx, x, y, H * 0.3 * p * r.range(0.8, 1.3), cherryR[i % cherryR.length], clamp01((1 - p) * 0.45), ctx.seed + 900 + i);
+  }
+  // the great cherry tree framing the view, on the side away from the castle
+  if (set.blossom > 0.1) {
+    const saveS = ctx.S; ctx.S = Object.assign({}, SEA, { leaf: cherry, blossom: null, snow: winter ? 1 : 0 });
+    const left = castleX > W / 2, dir = left ? 1 : -1, bx = left ? W * 0.12 : W * 0.88, oak = buildOak(ctx, bx, H * 0.86, H * 1.02, dir, ctx.seed * 5 + 1);
+    ctx.S = saveS;
+    items.push({ y: H * 0.86, group: [].concat(oak.back, [{ S: oak.wood }], oak.front) });
+  }
+  ctx.focus = [castleX / W, (peakTop - cw * 0.3) / H];
+  if (glows.length || lanterns.length) ctx.fx.push({ kind: 'glows', layer: 'front', list: glows.concat(lanterns) });
+  if (set.mist > 0.05) ctx.fx.push({ kind: 'fog', layer: 'front', y0: 0.5, k: set.mist * 0.5, c: mixc(rig.hazeC, [0.95, 0.82, 0.9], 0.4), seed: ctx.seed + 9 });
+  const parts = [];
+  if (set.particles) { parts.push({ kind: autumn ? 'leaves' : winter ? 'snow' : 'petals', n: winter ? 120 : 40 }); parts.push({ kind: 'motes', n: 26 }); }
+  if (set.birds && !rig.night) parts.push({ kind: 'birds', n: 4 });
+  return { clouds: buildClouds(ctx), sprites: flattenItems(items), stars: ctx.stars, particles: parts };
+}
+// an Eastern castle keep: a battered stone base, white storeys stepping in, dark flared roofs, gold at the ridge
+function paintKeep(S, ctx, cx, by, w, lit, glows) {
+  const { U, rig } = ctx, hz = 0.38, stoneR = makeRamp(rig, '#9a9288', 6), wallR = makeRamp(rig, '#f0ece4', 6, { sat: 0.05 }), roofR = makeRamp(rig, '#3e4c52', 6), gold = mixc(hex('#e8c050'), rig.hazeC, hz);
+  const H_ = (c) => mixc(c, rig.hazeC, hz);
+  const bh = w * 0.42;
+  for (let y = Math.floor(by - bh); y < by; y++) { const t = (by - y) / bh, half = w * (0.62 - 0.14 * Math.pow(t, 1.6)); for (let x = Math.floor(cx - half); x < cx + half; x++) { const row = Math.floor((by - y) / Math.max(2, 2.2 * U)); put(S, x, y, H_(shade(stoneR, 0.5 + (x - cx) / half * -rig.side * 0.15 + (hash2(Math.floor((x + row * 2) / Math.max(3, 4 * U)), row, 5) - 0.5) * 0.3))); } }
+  let y = by - bh, fw = w * 0.5;
+  for (let k = 0; k < 4; k++) {
+    const fh = w * 0.17, top = y - fh;
+    for (let yy = Math.floor(top); yy < y; yy++) for (let x = Math.floor(cx - fw / 2); x < cx + fw / 2; x++) put(S, x, yy, H_(shade(wallR, 0.6 + (x - cx) / fw * -rig.side * 0.2)));
+    const nwin = Math.max(1, Math.round(fw / (6 * U)));
+    for (let i = 0; i < nwin; i++) { const wx = cx - fw / 2 + (i + 0.5) * fw / nwin, on = lit && hash2(i, k, 9) < 0.6; for (let yy = Math.floor(top + fh * 0.35); yy < top + fh * 0.7; yy++) put(S, wx, yy, on ? [1, 0.78, 0.4] : H_([0.15, 0.15, 0.18])); if (on) glows.push({ x: wx, y: top + fh * 0.5, r: 5 * U, c: [1, 0.7, 0.35], k: 0.3, ph: i + k }); }
+    const ew = fw * 0.72 + w * 0.12, rt = Math.max(2, w * 0.07);                        // the flared roof over this storey
+    for (let yy = 0; yy < rt; yy++) { const t = yy / rt, half = lerp(fw * 0.45, ew, t); for (let x = Math.floor(cx - half); x <= cx + half; x++) put(S, x, top - rt + yy, H_(shade(roofR, 0.35 + (1 - t) * 0.3))); }
+    for (const s of [-1, 1]) { put(S, cx + s * ew, top - 1, H_(shade(roofR, 0.6))); put(S, cx + s * (ew + 1), top - 2, H_(shade(roofR, 0.6))); }
+    y = top - rt; fw *= 0.78;
+  }
+  const capH = w * 0.1; pPoly(S, ctx, [[cx - fw * 0.9, y + 1], [cx + fw * 0.9, y + 1], [cx, y - capH]], roofR);
+  put(S, cx - fw * 0.4, y - capH * 0.5, gold); put(S, cx + fw * 0.4, y - capH * 0.5, gold); put(S, cx, y - capH, gold);
+}
+function makeStoneLantern(ctx, x, by, h, lit, seed) {
+  const { U, rig } = ctx, S = surface(x - h, by - h * 1.2, h * 2, h * 1.3), st = makeRamp(rig, '#9a948c', 6), w = h * 0.34;
+  pPoly(S, ctx, [[x - w * 0.5, by], [x + w * 0.5, by], [x + w * 0.4, by - h * 0.12], [x - w * 0.4, by - h * 0.12]], st, { dv: -0.1 });
+  pShadeCap(S, ctx, x, by - h * 0.12, x, by - h * 0.55, w * 0.18 + 0.4, w * 0.16 + 0.4, st);
+  pPoly(S, ctx, [[x - w * 0.45, by - h * 0.55], [x + w * 0.45, by - h * 0.55], [x + w * 0.4, by - h * 0.8], [x - w * 0.4, by - h * 0.8]], st);
+  const win = lit ? makeRamp(rig, '#ffc060', 4, { lo: 0.7, bright: 1.3 }) : makeRamp(rig, '#2a2624', 3);
+  for (let y = Math.floor(by - h * 0.76); y < by - h * 0.6; y++) for (let xx = Math.floor(x - w * 0.18); xx < x + w * 0.18; xx++) put(S, xx, y, shade(win, 0.6));
+  pPoly(S, ctx, [[x - w * 0.8, by - h * 0.8], [x + w * 0.8, by - h * 0.8], [x + w * 0.3, by - h * 0.95], [x, by - h * 1.02], [x - w * 0.3, by - h * 0.95]], st, { dv: 0.05 });
+  outlineSprite(S, 0.8);
+  return trim(S);
+}
+
 // ---------- scene types, every setting (with a plain-English hint), presets and the description reader ----------
 const SCENE_TYPES = {
   landscape: { label: 'Countryside', desc: 'Meadows, hills, rivers and lakes', build: (c) => buildLandscape(c), main: ['season', 'terrain', 'water', 'tree', 'path', 'skyFx', 'camp'], detail: ['forest', 'conifers', 'plants', 'flowers', 'rocks'] },
@@ -2790,7 +3232,10 @@ const SCENE_TYPES = {
   coast: { label: 'Coast', desc: 'Beach, cliffs and a lighthouse', build: (c) => buildCoast(c), main: ['cliff', 'lighthouse', 'shore', 'boats'], detail: ['waves', 'plants'] },
   village: { label: 'Village', desc: 'A market square full of people', build: (c) => buildVillage(c), main: ['crowd', 'stalls', 'lanterns', 'bunting', 'season'], detail: ['houses'] },
   battle: { label: 'Battle', desc: 'Two armies clash before a castle', build: (c) => buildBattle(c), main: ['army', 'castle', 'banners', 'arrows', 'season'], detail: ['fires'] },
-  desert: { label: 'Desert', desc: 'Dunes, mesas, cacti and oases', build: (c) => buildDesert(c), main: ['mesas', 'oasis', 'skyFx'], detail: ['dunes', 'cacti'] }
+  desert: { label: 'Desert', desc: 'Dunes, mesas, cacti and oases', build: (c) => buildDesert(c), main: ['mesas', 'oasis', 'skyFx'], detail: ['dunes', 'cacti'] },
+  arena: { label: 'Colosseum', desc: 'Two gladiators duel in a Roman arena', build: (c) => buildArena(c), main: ['crowd', 'referee', 'awning', 'banners', 'season'], detail: [] },
+  war: { label: 'War beach', desc: 'A 1944 beach landing under fire', build: (c) => buildWar(c), main: ['troops', 'mg', 'craft', 'obstacles'], detail: ['smoke'] },
+  realm: { label: 'Castle realm', desc: 'A castle on a mountain above cherry trees', build: (c) => buildRealm(c), main: ['castleStyle', 'stonepath', 'stonelamps', 'season'], detail: ['blossom', 'mist'] }
 };
 const SETTINGS = {
   time: { label: 'Time of day', type: 'seg', opts: [['sunrise', 'Sunrise'], ['morning', 'Morning'], ['noon', 'Midday'], ['golden', 'Golden hour'], ['sunset', 'Sunset'], ['dusk', 'Dusk'], ['night', 'Night']],
@@ -2798,7 +3243,21 @@ const SETTINGS = {
   weather: { label: 'Weather', type: 'seg', opts: [['clear', 'Clear'], ['rain', 'Rain'], ['storm', 'Storm'], ['fog', 'Fog'], ['snow', 'Snow']], hint: 'Rain and storm turn the sky grey and add falling rain. Fog swallows the distance. Snow adds falling flakes.' },
   clouds: { label: 'Clouds', type: 'range', hint: 'How much of the sky is cloud.', lo: 'a clear sky', hi: 'big heaped clouds everywhere' },
   sunSide: { label: 'Light from', type: 'seg', opts: [['left', 'Left'], ['right', 'Right']], hint: 'Which side the sun or moon is on, so which side of everything is lit.' },
-  grade: { label: 'Colour grade', type: 'seg', opts: [['natural', 'Natural'], ['vivid', 'Vivid'], ['warm', 'Warm'], ['cool', 'Cool'], ['sepia', 'Sepia'], ['noir', 'Black & white']], hint: 'A final film look over the whole picture.' },
+  grade: { label: 'Colour grade', type: 'seg', opts: [['natural', 'Natural'], ['vivid', 'Vivid'], ['warm', 'Warm'], ['cool', 'Cool'], ['drab', 'Drab'], ['sepia', 'Sepia'], ['noir', 'Black & white']], hint: 'A final film look over the whole picture. Drab is the washed-out war-film look.' },
+  camera: { label: 'Camera', type: 'seg', opts: [['wide', 'Wide'], ['close', 'Close-up'], ['low', 'Low angle'], ['high', 'High angle'], ['drift', 'Slow pan']], hint: 'How the shot is framed. Close-up moves in on the action; low angle looks up with more sky; high angle looks down with more ground; slow pan drifts across the scene.' },
+  hd: { label: 'Pixel \u2194 HD', type: 'range', hint: 'How pixelated the picture looks. Toward HD the pixels get finer, and the last stretch adds soft, painted edges and a gentle glow.', lo: 'big chunky pixels', hi: 'fine detail, smooth like HD art' },
+  referee: { label: 'Referee', type: 'toggle', hint: 'The umpire in white watching the fight.' },
+  awning: { label: 'Sun awning', type: 'toggle', hint: 'The great striped sailcloth pulled over the stands.' },
+  troops: { label: 'Soldiers', type: 'range', hint: 'How many soldiers are on the beach.', lo: 'a few men', hi: 'a whole wave' },
+  mg: { label: 'Machine-gun fire', type: 'toggle', hint: 'The bunker fires bursts: muzzle flash, tracers and sand kicked up.' },
+  craft: { label: 'Landing craft', type: 'toggle', hint: 'A landing craft run up in the surf with its ramp down.' },
+  obstacles: { label: 'Beach obstacles', type: 'range', hint: 'Steel hedgehogs, stakes and rolls of wire.', lo: 'an open beach', hi: 'thick with obstacles' },
+  smoke: { label: 'Smoke & blasts', type: 'range', hint: 'Craters, drifting smoke and shells landing.', lo: 'quiet', hi: 'heavy bombardment' },
+  castleStyle: { label: 'Castle', type: 'seg', opts: [['eastern', 'Eastern keep'], ['western', 'Western spires'], ['none', 'None']], hint: 'The castle on the far mountain.' },
+  stonepath: { label: 'Stone road', type: 'toggle', hint: 'A great stepped stone road from your feet toward the mountain, and the trail up to the castle.' },
+  stonelamps: { label: 'Stone lanterns', type: 'toggle', hint: 'Stone lanterns along the road; they glow at sunset and night.' },
+  blossom: { label: 'Cherry trees', type: 'range', hint: 'How many cherry trees fill the valley and line the road.', lo: 'a bare valley', hi: 'a sea of cherry trees' },
+  mist: { label: 'Mist', type: 'range', hint: 'Soft mist drifting through the valley.', lo: 'clear air', hi: 'thick, dreamy mist' },
   birds: { label: 'Birds', type: 'toggle', hint: 'A small flock crosses the sky now and then (gulls by the sea).' },
   particles: { label: 'Falling and floating bits', type: 'toggle', hint: 'Rain, snow, petals, leaves, fireflies, embers or bubbles, depending on the scene.' },
   // countryside
@@ -2856,7 +3315,8 @@ const DEFAULTS = {
   path: true, tree: 'right', skyFx: 'none', camp: false, forest: 0.75, conifers: 0.5, plants: 0.75, flowers: 0.45, rocks: 0.5, res: 480, birds: true, particles: true,
   neon: 0.7, lamps: 0.6, wet: 0.7, people: 0.5, towers: 0.6, reef: 0.7, kelp: 0.35, fish: 0.6, turtle: false, clarity: 0.7, rays: 0.6,
   cliff: 'right', lighthouse: true, shore: 'sand', boats: true, waves: 0.5, crowd: 0.6, stalls: true, lanterns: false, bunting: false, houses: 0.7,
-  army: 0.6, castle: true, banners: true, arrows: true, fires: 0.3, mesas: true, oasis: false, dunes: 0.6, cacti: 0.5
+  army: 0.6, castle: true, banners: true, arrows: true, fires: 0.3, mesas: true, oasis: false, dunes: 0.6, cacti: 0.5,
+  camera: 'wide', hd: 0.5, referee: true, awning: false, troops: 0.7, mg: true, craft: true, obstacles: 0.7, smoke: 0.5, castleStyle: 'eastern', stonepath: true, stonelamps: true, blossom: 0.8, mist: 0.5
 };
 
 // ---------- the scene library: 8 scenes, a baseline and three variants each ----------
@@ -2900,7 +3360,22 @@ const LIBRARY = [
     { id: 'base', name: 'Baseline', prompt: 'Desert dunes at midday with mesas and cacti', set: { time: 'noon', dunes: 0.6, mesas: true, cacti: 0.5, oasis: false, clouds: 0.3, seed: 15 } },
     { id: 'oasis', name: 'Oasis at golden hour', prompt: 'An oasis with palm trees at golden hour', set: { time: 'golden', dunes: 0.5, mesas: true, cacti: 0.3, oasis: true, clouds: 0.35, seed: 25 } },
     { id: 'night', name: 'Desert night', prompt: 'A desert night under the Milky Way with cacti', set: { time: 'night', dunes: 0.55, mesas: true, cacti: 0.7, oasis: false, skyFx: 'milkyway', clouds: 0, seed: 35 } },
-    { id: 'dust', name: 'Dust haze', prompt: 'A hazy dusty desert at sunset, towering dunes', set: { time: 'sunset', weather: 'fog', dunes: 1, mesas: true, cacti: 0.2, oasis: false, grade: 'warm', seed: 45 } }] }
+    { id: 'dust', name: 'Dust haze', prompt: 'A hazy dusty desert at sunset, towering dunes', set: { time: 'sunset', weather: 'fog', dunes: 1, mesas: true, cacti: 0.2, oasis: false, grade: 'warm', seed: 45 } }] },
+  { id: 'duel', title: 'The Colosseum Duel', scene: 'arena', blurb: 'A 1v1 sword fight between two gladiators in the Roman Colosseum: a bright, sunny spring day and a roaring crowd. The variants change the camera and the style.', variants: [
+    { id: 'base', name: 'Baseline', prompt: 'Two gladiators in a 1v1 sword fight in the Roman Colosseum on a sunny spring day, a busy crowd', set: { time: 'noon', season: 'spring', crowd: 0.9, referee: true, awning: false, banners: true, clouds: 0.35, camera: 'wide', seed: 101 } },
+    { id: 'close', name: 'Close-up, finer pixels', prompt: 'A close-up of the gladiators mid-fight in the sunny Colosseum, finer pixels', set: { time: 'noon', season: 'spring', crowd: 0.9, referee: true, awning: false, banners: true, clouds: 0.35, camera: 'close', hd: 0.7, seed: 101 } },
+    { id: 'low', name: 'Low angle, golden light', prompt: 'A low-angle shot of the gladiator duel at golden hour under the sun awning, warm grade', set: { time: 'golden', season: 'spring', crowd: 1, referee: true, awning: true, banners: true, clouds: 0.5, camera: 'low', grade: 'warm', seed: 102 } },
+    { id: 'hd', name: 'Full HD, slow pan', prompt: 'The Colosseum duel as a smooth HD painting, the camera slowly panning across the crowd', set: { time: 'morning', season: 'spring', crowd: 0.85, referee: false, awning: false, banners: true, clouds: 0.4, camera: 'drift', hd: 1, grade: 'vivid', seed: 103 } }] },
+  { id: 'dday', title: 'D-Day Beach', scene: 'war', blurb: 'Allied soldiers advance up a beach toward a German bunker that sweeps it with machine-gun fire: dark, drab, a slight fog under a cloudy morning sky.', variants: [
+    { id: 'base', name: 'Baseline', prompt: 'A D-Day beach: allied soldiers advance on a German bunker firing machine-gun fire, dark drab foggy cloudy morning', set: { time: 'morning', weather: 'fog', clouds: 0.95, grade: 'drab', troops: 0.7, mg: true, craft: true, obstacles: 0.7, smoke: 0.55, camera: 'wide', seed: 144 } },
+    { id: 'close', name: 'Close-up in cover', prompt: 'A close-up of soldiers crouched behind a steel hedgehog under fire, drab and foggy', set: { time: 'morning', weather: 'fog', clouds: 0.95, grade: 'drab', troops: 0.8, mg: true, craft: true, obstacles: 0.9, smoke: 0.55, camera: 'close', hd: 0.7, seed: 144 } },
+    { id: 'newsreel', name: 'Black & white newsreel, high angle', prompt: 'A black and white newsreel of the beach landing from a high angle', set: { time: 'morning', weather: 'fog', clouds: 1, grade: 'noir', troops: 0.9, mg: true, craft: true, obstacles: 0.8, smoke: 0.7, camera: 'high', seed: 145 } },
+    { id: 'storm', name: 'Rain and smoke, slow pan', prompt: 'The landing in driving rain and heavy smoke, the camera panning slowly, cool grade', set: { time: 'morning', weather: 'rain', clouds: 1, grade: 'cool', troops: 0.7, mg: true, craft: true, obstacles: 0.7, smoke: 0.95, camera: 'drift', seed: 146 } }] },
+  { id: 'blossom', title: 'Blossom Castle', scene: 'realm', blurb: 'A mystical nature scene: a castle on a far mountain, a mighty stone road leading up to it from your feet, and a valley of cherry trees at an autumn sunset.', variants: [
+    { id: 'base', name: 'Baseline', prompt: 'A far castle on a mountain, a mighty stone path leading up to it, cherry trees, autumn sunset, mystical', set: { time: 'sunset', season: 'autumn', castleStyle: 'eastern', stonepath: true, stonelamps: true, blossom: 0.85, mist: 0.55, clouds: 0.5, camera: 'wide', seed: 188 } },
+    { id: 'low', name: 'Low angle up the road', prompt: 'A low-angle view up the stone road toward the castle at an autumn sunset, finer pixels', set: { time: 'sunset', season: 'autumn', castleStyle: 'eastern', stonepath: true, stonelamps: true, blossom: 0.85, mist: 0.5, clouds: 0.5, camera: 'low', hd: 0.7, seed: 188 } },
+    { id: 'hd', name: 'Full HD painting, telephoto on the castle', prompt: 'A smooth HD painting zoomed in on the castle above the cherry trees at sunset', set: { time: 'sunset', season: 'autumn', castleStyle: 'eastern', stonepath: true, stonelamps: true, blossom: 0.9, mist: 0.65, clouds: 0.45, camera: 'close', hd: 1, grade: 'vivid', seed: 189 } },
+    { id: 'dawn', name: 'Spring dawn, western spires, slow pan', prompt: 'A spired castle above pink cherry blossom at a misty spring sunrise, slowly panning', set: { time: 'sunrise', season: 'spring', castleStyle: 'western', stonepath: true, stonelamps: true, blossom: 0.9, mist: 0.75, clouds: 0.4, camera: 'drift', seed: 190 } }] }
 ];
 // the studio's quick-start presets: every library variant, plus the landscape presets from the first version
 const PRESETS = {};
@@ -2916,7 +3391,10 @@ function parseDescription(text) {
   const t = ' ' + text.toLowerCase().replace(/[^a-z0-9& ]+/g, ' ') + ' ', has = (...w) => w.some((x) => t.includes(' ' + x + ' ') || t.includes(' ' + x + 's ') || (x.includes(' ') && t.includes(x)));
   const set = {}, seen = [];
   const hit = (k, v, label) => { set[k] = v; seen.push(label); };
-  if (has('underwater', 'reef', 'coral', 'seabed', 'sea floor', 'ocean floor', 'kelp', 'undersea')) hit('scene', 'underwater', 'underwater');
+  if (has('gladiator', 'colosseum', 'coliseum', 'arena', 'roman')) hit('scene', 'arena', 'Colosseum');
+  else if (has('d day', 'dday', 'normandy', 'ww2', 'wwii', 'world war', 'bunker', 'omaha', 'landing craft', 'beach landing')) hit('scene', 'war', 'war beach');
+  else if (has('cherry', 'sakura', 'mystical', 'realm', 'kingdom', 'castle on', 'stone path', 'stone road')) hit('scene', 'realm', 'castle realm');
+  else if (has('underwater', 'reef', 'coral', 'seabed', 'sea floor', 'ocean floor', 'kelp', 'undersea')) hit('scene', 'underwater', 'underwater');
   else if (has('city', 'street', 'neon', 'noir', 'alley', 'downtown')) hit('scene', 'city', 'city street');
   else if (has('battle', 'war', 'army', 'armies', 'siege', 'knight', 'soldier')) hit('scene', 'battle', 'battle');
   else if (has('village', 'market', 'town', 'square', 'crowd', 'people', 'character', 'villager', 'fair', 'festival')) hit('scene', 'village', 'village');
@@ -2930,6 +3408,9 @@ function parseDescription(text) {
   if (has('spring', 'blossom', 'cherry')) hit('season', 'spring', 'spring'); else if (has('autumn', 'fall')) hit('season', 'autumn', 'autumn');
   else if (has('winter', 'snow', 'snowy', 'frozen', 'icy')) hit('season', 'winter', 'winter'); else if (has('summer')) hit('season', 'summer', 'summer');
   if (has('black and white', 'b&w', 'monochrome', 'noir')) hit('grade', 'noir', 'black & white'); else if (has('sepia', 'old photo')) hit('grade', 'sepia', 'sepia'); else if (has('vivid', 'vibrant')) hit('grade', 'vivid', 'vivid');
+  if (has('close up', 'closeup', 'close')) hit('camera', 'close', 'close-up'); else if (has('low angle')) hit('camera', 'low', 'low angle'); else if (has('high angle', 'aerial', 'overhead', 'from above')) hit('camera', 'high', 'high angle'); else if (has('pan', 'panning', 'drift', 'drifting')) hit('camera', 'drift', 'slow pan');
+  if (has('hd', 'high definition', 'painted', 'painting', 'smooth')) hit('hd', 1, 'HD'); else if (has('pixelated', 'chunky', 'retro', '8 bit')) hit('hd', 0.1, 'chunky pixels');
+  if (has('drab', 'gritty', 'desaturated')) hit('grade', 'drab', 'drab');
   if (has('mountain')) hit('terrain', 'mountains', 'mountains'); else if (has('plain', 'prairie', 'grassland')) hit('terrain', 'plains', 'plains');
   if (has('lake', 'pond')) hit('water', 'lake', 'lake'); else if (has('river', 'stream')) hit('water', 'river', 'river');
   if (has('path', 'trail', 'road', 'track')) hit('path', true, 'path');
@@ -2985,11 +3466,10 @@ function parseDescription(text) {
 // ==========================================================================
 (function () {
   const $ = (s) => document.querySelector(s);
-  const RES = [[320, 'Chunky'], [384, 'Bold'], [480, 'Classic'], [640, 'Fine']];
   const KEYS = Object.keys(DEFAULTS), NUM = KEYS.filter((k) => typeof DEFAULTS[k] === 'number'), BOOL = KEYS.filter((k) => typeof DEFAULTS[k] === 'boolean');
   const HIDE = { underwater: ['weather', 'clouds', 'sunSide', 'birds'], city: ['sunSide'] };
   let set = presetSettings('meadow-base'), scene = null, playing = true, clock = 0, last = performance.now(), lastQ = -1, dirty = true, recording = null, heard = [];
-  const view = $('#view'), vctx = view.getContext('2d');
+  const view = $('#view'), vctx = view.getContext('2d'), viewSmooth = $('#viewSmooth'), sctx = viewSmooth.getContext('2d'), viewGlow = $('#viewGlow'), gctx = viewGlow.getContext('2d');
   let img = null;
 
   // ---------- settings <-> link ----------
@@ -3020,8 +3500,11 @@ function parseDescription(text) {
   }
   function done(sc) {
     scene = sc;
-    if (view.width !== sc.W || view.height !== sc.H) { view.width = sc.W; view.height = sc.H; }
-    img = vctx.createImageData(sc.W, sc.H);
+    const ow = sc.outW || sc.W, oh = sc.outH || sc.H;
+    for (const c of [view, viewSmooth, viewGlow]) if (c.width !== ow || c.height !== oh) { c.width = ow; c.height = oh; }
+    img = vctx.createImageData(ow, oh); refreshUI();
+    viewSmooth.hidden = viewGlow.hidden = !(sc.finish > 0);
+    viewSmooth.style.opacity = sc.finish || 0; viewGlow.style.opacity = (sc.finish || 0) * 0.22;
     fit(); busy(false); dirty = true;
     if (!thumbsStarted) startThumbs();
   }
@@ -3037,13 +3520,14 @@ function parseDescription(text) {
     lastQ = q; dirty = false;
     compose(scene, q / 20, img.data);
     vctx.putImageData(img, 0, 0);
+    if (scene.finish > 0) { sctx.drawImage(view, 0, 0); gctx.drawImage(view, 0, 0); }
     if (recording) recording.draw();
   }
   function fit() {
     if (!scene) return;
     const st = $('#stage').getBoundingClientRect(), dpr = window.devicePixelRatio || 1, pad = document.body.classList.contains('clean') ? 0 : 28;
-    const k = Math.min((st.width - pad) / scene.W, (st.height - pad) / scene.H), kd = Math.floor(k * dpr), s = kd >= 2 ? kd / dpr : k;
-    view.style.width = Math.round(scene.W * s) + 'px'; view.style.height = Math.round(scene.H * s) + 'px';
+    const ow = scene.outW || scene.W, oh = scene.outH || scene.H, k = Math.min((st.width - pad) / ow, (st.height - pad) / oh), kd = Math.floor(k * dpr), s = kd >= 2 ? kd / dpr : k;
+    const scr = $('#screen'); scr.style.width = Math.round(ow * s) + 'px'; scr.style.height = Math.round(oh * s) + 'px';
   }
   window.addEventListener('resize', fit);
 
@@ -3102,28 +3586,25 @@ function parseDescription(text) {
     const light = ['time', 'weather', 'clouds', 'sunSide'].filter((k) => !hide.includes(k));
     const s2 = section('2', type === 'underwater' ? 'Light' : 'Light & weather', 'These change the mood of the whole picture the most.');
     light.forEach((k) => s2.appendChild(control(k)));
-    // 3 - the scene's own features
-    const s3 = section('3', T.label + ' features', 'What is in the scene.');
-    T.main.forEach((k) => s3.appendChild(control(k)));
-    // 4 - amounts
-    if (T.detail.length) { const s4 = section('4', 'Amounts', 'Fine-tune how much of each thing there is.'); T.detail.forEach((k) => s4.appendChild(control(k))); }
-    // 5 - look and motion
-    const s5 = section(T.detail.length ? '5' : '4', 'Look & motion', 'A film grade over the top, and what moves.');
-    s5.appendChild(control('grade'));
+    // 3 - camera and style
+    const s3 = section('3', 'Camera & style', 'How the shot is framed, how pixelated or HD it looks, and a film grade.');
+    ['camera', 'hd', 'grade'].forEach((k) => s3.appendChild(control(k)));
+    // 4 - the scene's own features
+    const s4 = section('4', T.label + ' features', 'What is in the scene.');
+    T.main.forEach((k) => s4.appendChild(control(k)));
+    // 5 - amounts
+    let n = 5;
+    if (T.detail.length) { const s5 = section(String(n++), 'Amounts', 'Fine-tune how much of each thing there is.'); T.detail.forEach((k) => s5.appendChild(control(k))); }
+    // last - motion and variation
+    const s6 = section(String(n), 'Motion & variation', 'What moves, and a different arrangement of the same scene.');
     const an = el('input', { type: 'checkbox' }); an.onchange = () => { playing = an.checked; dirty = true; refreshUI(); };
-    s5.appendChild(el('div', { class: 'row' }, [el('label', { class: 'toggle' }, [el('span', { text: 'Animate' }), an]), el('p', { class: 'hint', text: 'Clouds drift, plants and people sway, water glints, lights flicker.' })]));
+    s6.appendChild(el('div', { class: 'row' }, [el('label', { class: 'toggle' }, [el('span', { text: 'Animate' }), an]), el('p', { class: 'hint', text: 'Clouds drift, plants and people sway, water glints, lights flicker.' })]));
     ctl.animate = { set: () => { an.checked = playing; } };
-    ['birds', 'particles'].filter((k) => !hide.includes(k)).forEach((k) => s5.appendChild(control(k)));
-    // 6 - variation and pixel detail
-    const s6 = section(T.detail.length ? '6' : '5', 'Variation & detail', 'The last touches: a different layout, and how fine the pixels are.');
+    ['birds', 'particles'].filter((k) => !hide.includes(k)).forEach((k) => s6.appendChild(control(k)));
     const seed = el('input', { type: 'number', min: 0, max: 999999, step: 1, 'aria-label': 'Seed' });
     seed.onchange = () => edit('seed', Math.max(0, Math.floor(+seed.value || 0)));
     s6.appendChild(el('div', { class: 'row' }, [el('label', {}, [el('span', { text: 'Seed' })]), el('p', { class: 'hint', text: 'The same settings with a different arrangement: where trees, people and clouds fall. Keep a number you like.' }), el('div', { class: 'inline' }, [seed, el('button', { class: 'btn', text: 'New variation', onclick: reseed })])]));
     ctl.seed = { set: (v) => { seed.value = v; } };
-    const rs = el('div', { class: 'seg', role: 'group', 'aria-label': 'Pixel detail' });
-    const rb = RES.map(([w, n]) => { const b = el('button', { text: n + ' ' + w + '×' + Math.round(w * 9 / 16), onclick: () => edit('res', w) }); b.dataset.v = w; rs.appendChild(b); return b; });
-    s6.appendChild(el('div', { class: 'row' }, [el('label', {}, [el('span', { text: 'Pixel detail' })]), el('p', { class: 'hint', text: 'How many pixels the picture is painted with. Low: big chunky pixels. High: finer detail. Every size exports sharply at 1080p and 4K.' }), rs]));
-    ctl.res = { set: (v) => rb.forEach((b) => b.classList.toggle('on', +b.dataset.v === +v)) };
     refreshUI();
   }
   const keep = () => ({ res: set.res, birds: set.birds, particles: set.particles });
@@ -3141,7 +3622,7 @@ function parseDescription(text) {
     document.querySelectorAll('.presets button').forEach((b) => b.classList.toggle('on', b.dataset.preset === set.preset));
     const p = PRESETS[set.preset];
     $('#sceneName').textContent = p ? p.label : 'Custom scene';
-    $('#sceneInfo').textContent = (SCENE_TYPES[set.scene] || SCENE_TYPES.landscape).label + ' · ' + set.res + '×' + Math.round(set.res * 9 / 16) + ' · seed ' + set.seed;
+    const iw = scene ? (scene.outW || scene.W) : 480; $('#sceneInfo').textContent = (SCENE_TYPES[set.scene] || SCENE_TYPES.landscape).label + ' \u00b7 ' + iw + '\u00d7' + Math.round(iw * 9 / 16) + (scene && scene.finish > 0 ? ' HD' : '') + ' \u00b7 seed ' + set.seed;
     $('#play').textContent = playing ? 'Pause' : 'Play';
   }
   function busy(on) { $('#busy').classList.toggle('on', on); }
@@ -3159,13 +3640,13 @@ function parseDescription(text) {
   function save(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
   function exportPNG(outH) {
     if (!scene) return;
-    const k = Math.max(1, Math.round(outH / scene.H)), c = document.createElement('canvas'); c.width = scene.W * k; c.height = scene.H * k;
-    const g = c.getContext('2d'); g.imageSmoothingEnabled = false; g.drawImage(view, 0, 0, c.width, c.height);
+    const k = Math.max(1, Math.round(outH / view.height)), c = document.createElement('canvas'); c.width = view.width * k; c.height = view.height * k;
+    const g = c.getContext('2d'); drawFinished(g, c.width, c.height);
     c.toBlob((b) => { save(b, fileName('png', c.width, c.height)); toast('Saved ' + c.width + '×' + c.height + ' PNG'); }, 'image/png');
   }
   function record(sec) {
     if (!scene || recording) return;
-    const k = Math.round(1080 / scene.H), c = document.createElement('canvas'); c.width = scene.W * k; c.height = scene.H * k;
+    const k = Math.round(1080 / view.height), c = document.createElement('canvas'); c.width = view.width * k; c.height = view.height * k;
     const g = c.getContext('2d'); g.imageSmoothingEnabled = false;
     if (!c.captureStream || typeof MediaRecorder === 'undefined') { toast('Recording is not supported in this browser'); return; }
     const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
@@ -3173,10 +3654,19 @@ function parseDescription(text) {
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
     rec.onstop = () => { save(new Blob(chunks, { type: 'video/webm' }), fileName('webm', c.width, c.height)); recording = null; $('#rec').textContent = 'Record 10 s'; toast('Saved ' + sec + ' s WebM'); };
     playing = true; refreshUI();
-    recording = { draw: () => g.drawImage(view, 0, 0, c.width, c.height) };
+    recording = { draw: () => drawFinished(g, c.width, c.height) };
     recording.draw(); rec.start();
     let left = sec; $('#rec').textContent = 'Recording ' + left + ' s';
     const iv = setInterval(() => { left--; if (left > 0) $('#rec').textContent = 'Recording ' + left + ' s'; else { clearInterval(iv); rec.stop(); } }, 1000);
+  }
+  // the frame at export size: crisp pixels, with the smooth HD finish and its glow laid over when the slider asks for it
+  function drawFinished(g, w, h) {
+    const f = scene ? scene.finish || 0 : 0;
+    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over'; g.filter = 'none'; g.imageSmoothingEnabled = false; g.drawImage(view, 0, 0, w, h);
+    if (f <= 0) return;
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.globalAlpha = f; g.drawImage(view, 0, 0, w, h);
+    if ('filter' in g) { g.filter = 'blur(' + Math.round(w / 320) + 'px) saturate(1.2)'; g.globalCompositeOperation = 'screen'; g.globalAlpha = f * 0.22; g.drawImage(view, 0, 0, w, h); }
+    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over'; g.filter = 'none';
   }
   function copyLink() { writeHash(); (navigator.clipboard ? navigator.clipboard.writeText(location.href) : Promise.reject()).then(() => toast('Link copied'), () => toast('Copy the address bar to share this scene')); }
 
@@ -3188,11 +3678,11 @@ function parseDescription(text) {
     const w = mkWorker(); if (!w) return;
     const ids = []; for (const l of LIBRARY) ids.push(l.id + '-base'); for (const l of LIBRARY) for (const v of l.variants) if (v.id !== 'base') ids.push(l.id + '-' + v.id);
     let i = 0;
-    const next = () => { if (i >= ids.length) { w.terminate(); return; } w.postMessage({ id: i, set: Object.assign(presetSettings(ids[i]), { res: 320, particles: false, birds: false }) }); };
+    const next = () => { if (i >= ids.length) { w.terminate(); return; } w.postMessage({ id: i, set: Object.assign(presetSettings(ids[i]), { fixedRes: 320, particles: false, birds: false }) }); };
     w.onmessage = (e) => {
-      const sc = e.data.sc, id = ids[e.data.id], im = new ImageData(sc.W, sc.H);
+      const sc = e.data.sc, id = ids[e.data.id], im = new ImageData(sc.outW || sc.W, sc.outH || sc.H);
       compose(sc, 3, im.data);
-      const tmp = document.createElement('canvas'); tmp.width = sc.W; tmp.height = sc.H; tmp.getContext('2d').putImageData(im, 0, 0);
+      const tmp = document.createElement('canvas'); tmp.width = im.width; tmp.height = im.height; tmp.getContext('2d').putImageData(im, 0, 0);
       thumbCache[id] = tmp;
       document.querySelectorAll('canvas[data-thumb="' + id + '"]').forEach(drawThumb);
       i++; next();
